@@ -1,0 +1,51 @@
+name: Publish
+
+# Publishes to npmjs via trusted publishing (OIDC — no NPM_TOKEN, provenance automatic), mirrors to
+# GitHub Packages, then announces to the org discussions. Trigger by publishing a GitHub Release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC for npm trusted publishing + provenance
+      packages: write # GITHUB_TOKEN publishes to GitHub Packages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+      # Trusted publishing needs a newer npm than Node 22 bundles.
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Publish to npmjs (trusted publishing)
+        run: npm publish --access public
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@baryodev"
+      - name: Mirror to GitHub Packages
+        run: npm publish --registry https://npm.pkg.github.com
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  announce:
+    needs: publish
+    uses: BaryoDev/.github/.github/workflows/announce.yml@main
+    with:
+      package: "@baryodev/barako-client"
+      version: ${{ github.event.release.tag_name || github.ref_name }}
+      notes: ${{ github.event.release.body }}
+      install: "npm i @baryodev/barako-client"
+    secrets:
+      ANNOUNCE_TOKEN: ${{ secrets.ANNOUNCE_TOKEN }}
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}

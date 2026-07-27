@@ -1,0 +1,54 @@
+{
+  "name": "@baryodev/barako-client",
+  "version": "0.1.0",
+  "description": "Typed TypeScript client for the barakoCMS headless API. Framework-agnostic (Node, browser, edge), API-key or JWT auth with refresh, tenant handling, and typed content/schema resources.",
+  "keywords": [
+    "barakocms",
+    "cms",
+    "headless",
+    "sdk",
+    "client",
+    "typescript",
+    "content",
+    "api"
+  ],
+  "license": "MIT",
+  "author": "BaryoDev",
+  "homepage": "https://github.com/BaryoDev/barako-client",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BaryoDev/barako-client.git"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
