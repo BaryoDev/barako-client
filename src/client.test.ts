@@ -182,12 +182,32 @@ describe("public delivery", () => {
     await expect(cms.public.bySlug("post", "nope")).resolves.toBeNull();
   });
 
-  it("fetches a menu and returns null when missing", async () => {
-    const ok = mockFetch([{ body: { slug: "main", name: "Main", items: [{ label: "Blog", url: "/blog" }] } }]);
+  it("fetches a menu (a 'menu' content type) and returns null when missing", async () => {
+    /* The API returns a PublicContent; the client maps data.Name/data.Items into a PublicMenu.
+     * Item keys arrive PascalCase from the admin and are normalized to the typed shape. */
+    const ok = mockFetch([
+      {
+        body: {
+          id: "1",
+          contentType: "menu",
+          slug: "main",
+          data: {
+            Name: "Main",
+            Items: [
+              { Label: "Blog", Url: "/blog", OpenInNewTab: true },
+              { Label: "Docs", Url: "/docs", Children: [{ Label: "Guide", Url: "/docs/guide" }] },
+            ],
+          },
+        },
+      },
+    ]);
     const cms1 = createClient({ baseUrl: BASE, fetch: ok });
     const menu = await cms1.public.menu("main");
+    expect(menu?.name).toBe("Main");
     expect(menu?.items[0].label).toBe("Blog");
-    expect(ok.calls[0].url).toBe(`${BASE}/api/public/menus/main`);
+    expect(menu?.items[0].openInNewTab).toBe(true);
+    expect(menu?.items[1].children?.[0].label).toBe("Guide");
+    expect(ok.calls[0].url).toBe(`${BASE}/api/public/menu/main`);
 
     const missing = mockFetch([{ status: 404 }]);
     const cms2 = createClient({ baseUrl: BASE, fetch: missing });

@@ -1,6 +1,6 @@
 {
   "name": "@baryodev/barako-client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Typed TypeScript client for the barakoCMS headless API. Framework-agnostic (Node, browser, edge), API-key or JWT auth with refresh, tenant handling, and typed content/schema resources.",
   "keywords": [
     "barakocms",
