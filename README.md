@@ -49,7 +49,7 @@ await cms.me.switch("acme"); // swap to another tenant you belong to
 
 ## API
 
-`createClient(config)` returns a client with four resources.
+`createClient(config)` returns a client with five resources.
 
 ```ts
 // auth (JWT flows)
@@ -73,6 +73,26 @@ await cms.contents.create({ contentType, data, status?, sensitivity? });
 await cms.contents.update(id, { data, status?, version? });
 await cms.contents.setStatus(id, ContentStatus.Published);
 await cms.contents.history(id);
+
+// public delivery — anonymous, published-only, for a website frontend
+await cms.public.list("post", { page?, pageSize? }); // paged published entries
+await cms.public.bySlug("post", "my-slug");           // one entry, or null
+await cms.public.menu("main");                         // a nav menu, or null
+cms.public.fileUrl(fileId);                            // a public file URL for <img src>
+```
+
+### Public delivery
+
+For a website frontend you don't need auth at all — just a base URL (and a `tenant` for a multi-tenant
+deployment). The `public` resource reads only published content and never returns drafts or sensitive
+fields.
+
+```ts
+const cms = createClient({ baseUrl: "https://your-cms/barakocms-api", tenant: "your-site" });
+
+const posts = await cms.public.list("post");
+const post = await cms.public.bySlug("post", params.slug); // null -> render a 404
+const nav = await cms.public.menu("main");
 ```
 
 ### Errors

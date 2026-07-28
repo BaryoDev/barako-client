@@ -10,6 +10,7 @@ import { authResource, type AuthResource } from "./resources/auth";
 import { meResource, type MeResource } from "./resources/me";
 import { contentsResource, type ContentsResource } from "./resources/contents";
 import { contentTypesResource, type ContentTypesResource } from "./resources/content-types";
+import { publicResource, type PublicResource } from "./resources/public";
 
 export interface ClientConfig {
   /** API base URL, e.g. https://playground.baryo.dev/barakocms-api */
@@ -32,6 +33,8 @@ export interface BarakoClient {
   me: MeResource;
   contents: ContentsResource;
   contentTypes: ContentTypesResource;
+  /** Anonymous public delivery for a website frontend (no auth needed). */
+  public: PublicResource;
 }
 
 /**
@@ -68,5 +71,6 @@ export function createClient(config: ClientConfig): BarakoClient {
     me: meResource(transport, store),
     contents: contentsResource(transport),
     contentTypes: contentTypesResource(transport),
+    public: publicResource(transport, config.baseUrl),
   };
 }

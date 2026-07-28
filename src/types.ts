@@ -96,3 +96,29 @@ export interface ContentVersion {
   updatedAt?: string;
   data?: Record<string, unknown>;
 }
+
+// --- Public delivery (anonymous, published-only) -------------------------------
+
+/** A published entry from the public delivery API. Only public fields are present. */
+export interface PublicContent {
+  id: string;
+  contentType: string;
+  slug?: string | null;
+  data: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MenuItem {
+  label: string;
+  url: string;
+  openInNewTab?: boolean;
+  children?: MenuItem[];
+}
+
+/** A navigation menu from the public delivery API. */
+export interface PublicMenu {
+  slug: string;
+  name: string;
+  items: MenuItem[];
+}

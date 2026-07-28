@@ -149,3 +149,53 @@ describe("tenantOfToken", () => {
     expect(tenantOfToken(undefined)).toBeNull();
   });
 });
+
+// --- public delivery (anonymous) -------------------------------------------
+
+describe("public delivery", () => {
+  it("lists published entries with no auth, and sends X-Tenant when configured", async () => {
+    const fetchImpl = mockFetch([{ body: { items: [{ id: "1", contentType: "post", slug: "hello", data: {} }], page: 1 } }]);
+    const cms = createClient({ baseUrl: BASE, tenant: "acme", fetch: fetchImpl });
+
+    const page = await cms.public.list("post", { page: 1, pageSize: 10 });
+
+    expect(page.items[0].slug).toBe("hello");
+    expect(fetchImpl.calls[0].url).toBe(`${BASE}/api/public/post?page=1&pageSize=10`);
+    expect(authHeader(fetchImpl.calls[0].init)).toBeUndefined();
+    expect(tenantHeader(fetchImpl.calls[0].init)).toBe("acme");
+  });
+
+  it("gets an entry by slug", async () => {
+    const fetchImpl = mockFetch([{ body: { id: "1", contentType: "post", slug: "hello", data: { Title: "Hi" } } }]);
+    const cms = createClient({ baseUrl: BASE, fetch: fetchImpl });
+
+    const post = await cms.public.bySlug("post", "hello");
+
+    expect(post?.data.Title).toBe("Hi");
+    expect(fetchImpl.calls[0].url).toBe(`${BASE}/api/public/post/hello`);
+  });
+
+  it("returns null (not an error) when a slug is not found", async () => {
+    const fetchImpl = mockFetch([{ status: 404, text: "not found" }]);
+    const cms = createClient({ baseUrl: BASE, fetch: fetchImpl });
+
+    await expect(cms.public.bySlug("post", "nope")).resolves.toBeNull();
+  });
+
+  it("fetches a menu and returns null when missing", async () => {
+    const ok = mockFetch([{ body: { slug: "main", name: "Main", items: [{ label: "Blog", url: "/blog" }] } }]);
+    const cms1 = createClient({ baseUrl: BASE, fetch: ok });
+    const menu = await cms1.public.menu("main");
+    expect(menu?.items[0].label).toBe("Blog");
+    expect(ok.calls[0].url).toBe(`${BASE}/api/public/menus/main`);
+
+    const missing = mockFetch([{ status: 404 }]);
+    const cms2 = createClient({ baseUrl: BASE, fetch: missing });
+    await expect(cms2.public.menu("nope")).resolves.toBeNull();
+  });
+
+  it("builds a public file URL", () => {
+    const cms = createClient({ baseUrl: BASE, fetch: mockFetch([]) });
+    expect(cms.public.fileUrl("abc-123")).toBe(`${BASE}/api/public/files/abc-123`);
+  });
+});
