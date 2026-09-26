@@ -7,7 +7,7 @@ export interface TokenStore {
   clear(): void;
 }
 
-/** In-memory store — the default, right for servers, scripts, and tests. */
+/** In-memory store, the default, right for servers, scripts, and tests. */
 export function memoryStore(initial?: { token?: string; refreshToken?: string }): TokenStore {
   let state = { ...initial };
   return {

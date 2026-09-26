@@ -5,7 +5,7 @@ import type { AuthTokens } from "../types";
 export interface AuthResource {
   /** Sign in with a username and password. Optionally scope the token to a tenant (sent as X-Tenant).
    *  Stores the returned tokens. If the deployment requires device approval, the response has
-   *  `deviceApprovalRequired: true` and no tokens — collect the emailed OTP and verify it. */
+   *  `deviceApprovalRequired: true` and no tokens; collect the emailed OTP and verify it. */
   login(username: string, password: string, tenant?: string): Promise<AuthTokens>;
   /** Revoke the refresh token server-side and clear the local store. */
   logout(): Promise<void>;
