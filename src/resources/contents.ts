@@ -8,6 +8,7 @@ import type {
   Paged,
   UpdateContentInput,
 } from "../types";
+import { allPages } from "./all-pages";
 
 export interface WriteResult {
   id: string;
@@ -60,6 +61,8 @@ export function contentsResource(transport: Transport): ContentsResource {
       }),
 
     history: (id) =>
-      transport.request<ContentVersion[]>({ method: "GET", path: `/api/contents/${id}/history` }),
+      allPages((query) =>
+        transport.request<Paged<ContentVersion>>({ method: "GET", path: `/api/contents/${id}/history`, query }),
+      ),
   };
 }

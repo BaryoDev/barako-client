@@ -41,11 +41,11 @@ export interface BarakoClient {
  * Create a barakoCMS client. Framework-agnostic; runs anywhere fetch does.
  *
  * ```ts
- * // machine caller — an API key
+ * // machine caller: an API key
  * const cms = createClient({ baseUrl, apiKey: "bcms_..." });
  * const posts = await cms.contents.list({ contentType: "post" });
  *
- * // human app — log in, tokens refresh automatically
+ * // human app: log in, tokens refresh automatically
  * const cms = createClient({ baseUrl });
  * await cms.auth.login("user", "pass");
  * ```
@@ -54,7 +54,7 @@ export function createClient(config: ClientConfig): BarakoClient {
   if (!config.baseUrl) throw new Error("createClient: baseUrl is required.");
   const fetchImpl = config.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
-    throw new Error("createClient: no fetch available — pass config.fetch (Node < 18).");
+    throw new Error("createClient: no global fetch here, pass config.fetch.");
   }
 
   const store =

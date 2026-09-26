@@ -219,3 +219,57 @@ describe("public delivery", () => {
     expect(cms.public.fileUrl("abc-123")).toBe(`${BASE}/api/public/files/abc-123`);
   });
 });
+
+// --- List endpoints answer with the paged envelope ---------------------------
+
+describe("lists that return every item", () => {
+  it("reads content types from /api/content-types and unwraps the envelope", async () => {
+    const fetchImpl = mockFetch([
+      { body: { items: [{ name: "post" }, { name: "page" }], page: 1, pageSize: 100, totalItems: 2, totalPages: 1, hasNextPage: false } },
+    ]);
+    const cms = createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: fetchImpl });
+
+    const types = await cms.contentTypes.list();
+
+    expect(types).toHaveLength(2);
+    expect(types.map((t) => t.name)).toEqual(["post", "page"]);
+    expect(fetchImpl.calls[0].url).toBe(`${BASE}/api/content-types?page=1&pageSize=100`);
+  });
+
+  it("follows hasNextPage until the last page", async () => {
+    const fetchImpl = mockFetch([
+      { body: { items: [{ slug: "a", name: "A" }], page: 1, pageSize: 100, totalItems: 2, totalPages: 2, hasNextPage: true } },
+      { body: { items: [{ slug: "b", name: "B" }], page: 2, pageSize: 100, totalItems: 2, totalPages: 2, hasNextPage: false } },
+    ]);
+    const cms = createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: fetchImpl });
+
+    const tenants = await cms.me.tenants();
+
+    expect(tenants).toHaveLength(2);
+    expect(tenants.map((t) => t.slug)).toEqual(["a", "b"]);
+    expect(fetchImpl.calls).toHaveLength(2);
+    expect(fetchImpl.calls[1].url).toBe(`${BASE}/api/me/tenants?page=2&pageSize=100`);
+  });
+
+  it("unwraps an entry's version history", async () => {
+    const fetchImpl = mockFetch([
+      { body: { items: [{ version: 2, status: "Published" }, { version: 1, status: "Draft" }], page: 1, pageSize: 100, totalItems: 2, totalPages: 1, hasNextPage: false } },
+    ]);
+    const cms = createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: fetchImpl });
+
+    const history = await cms.contents.history("e1");
+
+    expect(history).toHaveLength(2);
+    expect(history.map((v) => v.version)).toEqual([2, 1]);
+  });
+
+  it("takes a bare array as the whole list", async () => {
+    const fetchImpl = mockFetch([{ body: [{ name: "post" }] }]);
+    const cms = createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: fetchImpl });
+
+    const types = await cms.contentTypes.list();
+
+    expect(types).toHaveLength(1);
+    expect(fetchImpl.calls).toHaveLength(1);
+  });
+});

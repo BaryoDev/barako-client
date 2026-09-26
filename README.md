@@ -10,6 +10,12 @@ Framework-agnostic and isomorphic: it runs in Node, the browser, and edge runtim
 - **Typed.** Content, content types, and results are typed; failures throw a `BarakoError` carrying
   the status and the server's message.
 
+## Compatibility
+
+This version works with barakoCMS 4.0 through 4.4 (API contract 1 to 4, sent by the API as
+`X-Api-Contract-Version`). The client does not read that header, so check it yourself when you move
+to a barakoCMS release that raises the contract. Node 18 or later.
+
 ## Install
 
 ```bash
@@ -18,7 +24,7 @@ npm i @baryodev/barako-client
 
 ## Quick start
 
-Machine caller with an API key (create one in the admin under Access, then API keys):
+Machine caller with an API key (create one in the barakoBrew console under Access, then API keys):
 
 ```ts
 import { createClient } from "@baryodev/barako-client";
@@ -74,7 +80,7 @@ await cms.contents.update(id, { data, status?, version? });
 await cms.contents.setStatus(id, ContentStatus.Published);
 await cms.contents.history(id);
 
-// public delivery — anonymous, published-only, for a website frontend
+// public delivery: anonymous, published-only, for a website frontend
 await cms.public.list("post", { page?, pageSize? }); // paged published entries
 await cms.public.bySlug("post", "my-slug");           // one entry, or null
 await cms.public.menu("main");                         // a nav menu, or null
@@ -83,7 +89,7 @@ cms.public.fileUrl(fileId);                            // a public file URL for 
 
 ### Public delivery
 
-For a website frontend you don't need auth at all — just a base URL (and a `tenant` for a multi-tenant
+For a website frontend you don't need auth at all, just a base URL (and a `tenant` for a multi-tenant
 deployment). The `public` resource reads only published content and never returns drafts or sensitive
 fields.
 
@@ -91,7 +97,7 @@ fields.
 const cms = createClient({ baseUrl: "https://your-cms/barakocms-api", tenant: "your-site" });
 
 const posts = await cms.public.list("post");
-const post = await cms.public.bySlug("post", params.slug); // null -> render a 404
+const post = await cms.public.bySlug("post", params.slug); // null: render a 404
 const nav = await cms.public.menu("main");
 ```
 
@@ -118,7 +124,7 @@ try {
 | `token` / `refreshToken` | Start JWT auth from existing tokens |
 | `tenant` | Force the X-Tenant for JWT auth (otherwise read from the token) |
 | `storage` | Where JWT tokens live: `memoryStore()` (default) or `browserStore()` |
-| `fetch` | Custom fetch, for Node < 18 or interception |
+| `fetch` | Custom fetch, for interception or a runtime without a global one |
 
 ## License
 

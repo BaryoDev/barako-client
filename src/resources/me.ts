@@ -1,6 +1,7 @@
 import type { Transport } from "../transport";
 import type { TokenStore } from "../auth";
-import type { AuthTokens, TenantSummary } from "../types";
+import type { AuthTokens, Paged, TenantSummary } from "../types";
+import { allPages } from "./all-pages";
 
 export interface MeResource {
   /** The tenants the signed-in user belongs to. */
@@ -12,7 +13,10 @@ export interface MeResource {
 
 export function meResource(transport: Transport, store: TokenStore): MeResource {
   return {
-    tenants: () => transport.request<TenantSummary[]>({ method: "GET", path: "/api/me/tenants" }),
+    tenants: () =>
+      allPages((query) =>
+        transport.request<Paged<TenantSummary>>({ method: "GET", path: "/api/me/tenants", query }),
+      ),
 
     async switch(tenantSlug) {
       const tokens = await transport.request<AuthTokens>({

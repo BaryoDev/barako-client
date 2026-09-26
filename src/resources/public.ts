@@ -22,7 +22,7 @@ export interface PublicResource {
    * `menu` content type read through public delivery, so it stays pluggable like any other content.
    */
   menu(slug: string): Promise<PublicMenu | null>;
-  /** The public URL for a file id — use directly as an `<img>` src. */
+  /** The public URL for a file id, to use directly as an `<img>` src. */
   fileUrl(id: string): string;
 }
 
