@@ -27,7 +27,8 @@ export function meResource(transport: Transport, store: TokenStore): MeResource 
       });
       // barakoCMS returns an empty refresh token here: the one from sign-in covers every tenant.
       // An older API still returns a new one, and then it replaces the stored one.
-      store.set(tokens.refreshToken ? { token: tokens.token, refreshToken: tokens.refreshToken } : { token: tokens.token });
+      // Passing the stored one back keeps it even in a store that replaces its state on set.
+      store.set({ token: tokens.token, refreshToken: tokens.refreshToken || store.get().refreshToken });
       return tokens;
     },
   };
