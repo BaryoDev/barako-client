@@ -7,6 +7,13 @@ export interface TokenStore {
   clear(): void;
 }
 
+/** The tokens from a switch or refresh response, as a store update. An empty or missing refresh
+ *  token leaves the stored one alone: a tenant switch returns none, since the refresh token from
+ *  sign-in covers every tenant the user belongs to. */
+export function keepingRefreshToken({ token, refreshToken }: { token: string; refreshToken?: string }) {
+  return refreshToken ? { token, refreshToken } : { token };
+}
+
 /** In-memory store, the default, right for servers, scripts, and tests. */
 export function memoryStore(initial?: { token?: string; refreshToken?: string }): TokenStore {
   let state = { ...initial };
@@ -138,7 +145,7 @@ export class JwtAuthenticator implements Authenticator {
       return false;
     }
     const data = (await res.json()) as AuthTokens;
-    this.store.set({ token: data.token, refreshToken: data.refreshToken });
+    this.store.set(keepingRefreshToken(data));
     return true;
   }
 }

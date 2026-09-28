@@ -1,5 +1,5 @@
 import type { Transport } from "../transport";
-import type { TokenStore } from "../auth";
+import { keepingRefreshToken, type TokenStore } from "../auth";
 import type { AuthTokens } from "../types";
 
 export interface AuthResource {
@@ -56,7 +56,7 @@ export function authResource(transport: Transport, store: TokenStore): AuthResou
         body: { refreshToken },
         noRetry: true,
       });
-      store.set({ token: tokens.token, refreshToken: tokens.refreshToken });
+      store.set(keepingRefreshToken(tokens));
       return tokens;
     },
   };
