@@ -3,15 +3,10 @@ import type { AuthTokens } from "./types";
 /** Where JWT tokens are kept between requests. Swap in a browser (localStorage) or persistent store. */
 export interface TokenStore {
   get(): { token?: string; refreshToken?: string };
+  /** Merges: a key left out keeps its stored value. `me.switch()` sets only `token` and relies on
+   *  the stored refresh token surviving, so a custom store must not replace the whole state here. */
   set(tokens: { token?: string; refreshToken?: string }): void;
   clear(): void;
-}
-
-/** The tokens from a switch or refresh response, as a store update. An empty or missing refresh
- *  token leaves the stored one alone: a tenant switch returns none, since the refresh token from
- *  sign-in covers every tenant the user belongs to. */
-export function keepingRefreshToken({ token, refreshToken }: { token: string; refreshToken?: string }) {
-  return refreshToken ? { token, refreshToken } : { token };
 }
 
 /** In-memory store, the default, right for servers, scripts, and tests. */
@@ -145,7 +140,13 @@ export class JwtAuthenticator implements Authenticator {
       return false;
     }
     const data = (await res.json()) as AuthTokens;
-    this.store.set(keepingRefreshToken(data));
+    // A refresh always rotates, so the token just sent is used. Keeping it would make the next
+    // refresh a replay, which revokes every session the user has.
+    if (!data.refreshToken) {
+      this.store.clear();
+      return false;
+    }
+    this.store.set({ token: data.token, refreshToken: data.refreshToken });
     return true;
   }
 }

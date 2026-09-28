@@ -1,5 +1,5 @@
 import type { Transport } from "../transport";
-import { keepingRefreshToken, type TokenStore } from "../auth";
+import type { TokenStore } from "../auth";
 import type { AuthTokens } from "../types";
 
 export interface AuthResource {
@@ -56,7 +56,12 @@ export function authResource(transport: Transport, store: TokenStore): AuthResou
         body: { refreshToken },
         noRetry: true,
       });
-      store.set(keepingRefreshToken(tokens));
+      // A refresh always rotates, so the token just sent is used and cannot be kept.
+      if (!tokens.refreshToken) {
+        store.clear();
+        throw new Error("The refresh returned no refresh token. Signed out.");
+      }
+      store.set({ token: tokens.token, refreshToken: tokens.refreshToken });
       return tokens;
     },
   };

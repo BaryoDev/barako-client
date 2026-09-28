@@ -156,30 +156,43 @@ describe("keeping the refresh token", () => {
     expect(store.get()).toEqual({ token: away, refreshToken: "r-switch" });
   });
 
-  it("an explicit refresh keeps the existing refresh token when the response's is empty", async () => {
-    const next = jwt({ tenant: "acme" });
+  // A refresh always rotates, so the token just sent is now used. Keeping it would make the next
+  // refresh a replay, which the server answers by revoking every session the user has.
+  it("an explicit refresh that returns no refresh token signs out", async () => {
     const store = memoryStore({ token: jwt({ tenant: "acme" }), refreshToken: "r1" });
-    const fetchImpl = mockFetch([{ body: { token: next, expiry: "", refreshToken: "" } }]);
+    const fetchImpl = mockFetch([{ body: { token: jwt({ tenant: "acme" }), expiry: "", refreshToken: "" } }]);
     const cms = createClient({ baseUrl: BASE, storage: store, fetch: fetchImpl });
 
-    await cms.auth.refresh();
+    await expect(cms.auth.refresh()).rejects.toThrow();
 
-    expect(store.get()).toEqual({ token: next, refreshToken: "r1" });
+    expect(store.get()).toEqual({});
+    expect(cms.auth.isAuthenticated).toBe(false);
   });
 
-  it("an automatic refresh keeps the existing refresh token when the response's is empty", async () => {
-    const next = jwt({ tenant: "acme" });
+  it("an automatic refresh that returns no refresh token signs out", async () => {
     const store = memoryStore({ token: jwt({ tenant: "acme" }), refreshToken: "r1" });
     const fetchImpl = mockFetch([
       { status: 401, body: { message: "expired" } },
-      { body: { token: next, refreshToken: "" } }, // refresh
+      { body: { token: jwt({ tenant: "acme" }), refreshToken: "" } }, // refresh
       { body: [] },
     ]);
     const cms = createClient({ baseUrl: BASE, storage: store, fetch: fetchImpl });
 
-    await cms.contentTypes.list();
+    await expect(cms.contentTypes.list()).rejects.toMatchObject({ status: 401 });
 
-    expect(store.get()).toEqual({ token: next, refreshToken: "r1" });
+    expect(store.get()).toEqual({});
+    expect(fetchImpl.calls.filter((c) => c.url.endsWith("/api/auth/refresh"))).toHaveLength(1);
+  });
+
+  it("a refresh that returns a new refresh token stores it", async () => {
+    const next = jwt({ tenant: "acme" });
+    const store = memoryStore({ token: jwt({ tenant: "acme" }), refreshToken: "r1" });
+    const fetchImpl = mockFetch([{ body: { token: next, expiry: "", refreshToken: "r2" } }]);
+    const cms = createClient({ baseUrl: BASE, storage: store, fetch: fetchImpl });
+
+    await cms.auth.refresh();
+
+    expect(store.get()).toEqual({ token: next, refreshToken: "r2" });
   });
 });
 

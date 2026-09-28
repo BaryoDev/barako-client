@@ -1,5 +1,5 @@
 import type { Transport } from "../transport";
-import { keepingRefreshToken, type TokenStore } from "../auth";
+import type { TokenStore } from "../auth";
 import type { AuthTokens, Paged, TenantSummary } from "../types";
 import { allPages } from "./all-pages";
 
@@ -25,7 +25,9 @@ export function meResource(transport: Transport, store: TokenStore): MeResource 
         path: "/api/me/switch",
         body: { club: tenantSlug },
       });
-      store.set(keepingRefreshToken(tokens));
+      // barakoCMS returns an empty refresh token here: the one from sign-in covers every tenant.
+      // An older API still returns a new one, and then it replaces the stored one.
+      store.set(tokens.refreshToken ? { token: tokens.token, refreshToken: tokens.refreshToken } : { token: tokens.token });
       return tokens;
     },
   };
