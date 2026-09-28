@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createClient, BarakoError, tenantOfToken } from "./index";
+import { createClient, BarakoError, tenantOfToken, memoryStore } from "./index";
 
 // --- helpers ---------------------------------------------------------------
 
@@ -110,6 +110,89 @@ describe("JWT auth", () => {
 
     await cms.contentTypes.list();
     expect(authHeader(fetchImpl.calls[1].init)).toBe(`Bearer ${token}`);
+  });
+});
+
+// --- keeping the refresh token ---------------------------------------------
+
+describe("keeping the refresh token", () => {
+  // barakoCMS no longer issues a refresh token on a tenant switch: the one from sign-in covers every
+  // tenant the user belongs to. The response keeps the field, empty.
+  for (const [name, switchBody] of [
+    ["empty", { refreshToken: "", refreshTokenExpiry: "0001-01-01T00:00:00" }],
+    ["missing", {}],
+  ] as const) {
+    it(`switch keeps the existing refresh token when the response's is ${name}`, async () => {
+      const home = jwt({ tenant: "home" });
+      const away = jwt({ tenant: "away" });
+      const store = memoryStore({ token: home, refreshToken: "r1" });
+      const fetchImpl = mockFetch([
+        { body: { token: away, expiry: "", ...switchBody } }, // switch
+        { status: 401, body: { message: "expired" } },
+        { body: { token: jwt({ tenant: "away" }), refreshToken: "r2" } }, // refresh
+        { body: [] },
+      ]);
+      const cms = createClient({ baseUrl: BASE, storage: store, fetch: fetchImpl });
+
+      await cms.me.switch("away");
+      expect(store.get()).toEqual({ token: away, refreshToken: "r1" });
+
+      await cms.contentTypes.list();
+      const refresh = fetchImpl.calls.find((c) => c.url.endsWith("/api/auth/refresh"));
+      expect(refresh).toBeDefined();
+      expect(JSON.parse(refresh!.init.body as string)).toEqual({ refreshToken: "r1" });
+      expect(tenantHeader(refresh!.init)).toBe("away");
+    });
+  }
+
+  it("switch still stores a refresh token an older API returns", async () => {
+    const away = jwt({ tenant: "away" });
+    const store = memoryStore({ token: jwt({ tenant: "home" }), refreshToken: "r1" });
+    const fetchImpl = mockFetch([{ body: { token: away, expiry: "", refreshToken: "r-switch" } }]);
+    const cms = createClient({ baseUrl: BASE, storage: store, fetch: fetchImpl });
+
+    await cms.me.switch("away");
+
+    expect(store.get()).toEqual({ token: away, refreshToken: "r-switch" });
+  });
+
+  // A refresh always rotates, so the token just sent is now used. Keeping it would make the next
+  // refresh a replay, which the server answers by revoking every session the user has.
+  it("an explicit refresh that returns no refresh token signs out", async () => {
+    const store = memoryStore({ token: jwt({ tenant: "acme" }), refreshToken: "r1" });
+    const fetchImpl = mockFetch([{ body: { token: jwt({ tenant: "acme" }), expiry: "", refreshToken: "" } }]);
+    const cms = createClient({ baseUrl: BASE, storage: store, fetch: fetchImpl });
+
+    await expect(cms.auth.refresh()).rejects.toThrow();
+
+    expect(store.get()).toEqual({});
+    expect(cms.auth.isAuthenticated).toBe(false);
+  });
+
+  it("an automatic refresh that returns no refresh token signs out", async () => {
+    const store = memoryStore({ token: jwt({ tenant: "acme" }), refreshToken: "r1" });
+    const fetchImpl = mockFetch([
+      { status: 401, body: { message: "expired" } },
+      { body: { token: jwt({ tenant: "acme" }), refreshToken: "" } }, // refresh
+      { body: [] },
+    ]);
+    const cms = createClient({ baseUrl: BASE, storage: store, fetch: fetchImpl });
+
+    await expect(cms.contentTypes.list()).rejects.toMatchObject({ status: 401 });
+
+    expect(store.get()).toEqual({});
+    expect(fetchImpl.calls.filter((c) => c.url.endsWith("/api/auth/refresh"))).toHaveLength(1);
+  });
+
+  it("a refresh that returns a new refresh token stores it", async () => {
+    const next = jwt({ tenant: "acme" });
+    const store = memoryStore({ token: jwt({ tenant: "acme" }), refreshToken: "r1" });
+    const fetchImpl = mockFetch([{ body: { token: next, expiry: "", refreshToken: "r2" } }]);
+    const cms = createClient({ baseUrl: BASE, storage: store, fetch: fetchImpl });
+
+    await cms.auth.refresh();
+
+    expect(store.get()).toEqual({ token: next, refreshToken: "r2" });
   });
 });
 
