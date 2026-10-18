@@ -12,15 +12,18 @@ Framework-agnostic and isomorphic: it runs in Node, the browser, and edge runtim
 
 ## Compatibility
 
-This version works with barakoCMS 4.0 through 5.0 (API contract 1 to 8, sent by the API as
-`X-Api-Contract-Version`). Contracts 5 to 8 changed nothing on the routes and shapes this client
-uses; that comes from reading the barakoCMS changelog and source, not from a run against a 5.0
-server. The client does not read the header, so check it yourself when you move to a barakoCMS
-release that raises the contract. Node 18 or later.
+This version works with barakoCMS 4.0 through 5.0. The admin routes are on API contract 1 to 8,
+sent as `X-Api-Contract-Version`. Since 4.6, public delivery (`cms.public`) has its own number,
+delivery contract 6 to 8, sent as `X-Delivery-Contract-Version`; before 4.6 it shared the admin
+header. Contracts 5 to 8 changed nothing on the routes and shapes this client uses; that comes from
+reading the barakoCMS changelog and source, not from a run against a 5.0 server. The client reads
+neither header, so check the one that applies when you move to a barakoCMS release that raises it.
+Node 18 or later.
 
 Some 5.0 writes are stricter: `POST` and `PUT` on contents answer 400 for a field name the content
-type does not declare, and a tenant that is not Active answers 404 on public delivery. Both surface
-as a `BarakoError`.
+type does not declare, which surfaces as a `BarakoError`. A tenant that is not Active answers 404
+on public delivery: `public.list` throws a `BarakoError`, and `public.bySlug` and `public.menu`
+return `null`.
 
 ## Install
 
