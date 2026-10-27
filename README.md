@@ -62,6 +62,8 @@ const tenants = await cms.me.tenants();
 await cms.me.switch("acme"); // swap to another tenant you belong to
 ```
 
+> `browserStore()` keeps the refresh token in localStorage, readable by any script on the page, so an XSS leaks it. Prefer the default in-memory store or a cookie-based refresh flow.
+
 ## API
 
 `createClient(config)` returns a client with five resources.

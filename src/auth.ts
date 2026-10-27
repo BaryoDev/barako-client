@@ -23,7 +23,13 @@ export function memoryStore(initial?: { token?: string; refreshToken?: string })
   };
 }
 
-/** localStorage-backed store for browser apps. Persists across reloads and tabs. */
+/**
+ * localStorage-backed store for browser apps. Persists across reloads and tabs.
+ *
+ * Note: this keeps the refresh token in localStorage, which any script running on the page can
+ * read, so an XSS leaks it. Prefer the default in-memory store (`memoryStore()`) or a cookie-based
+ * refresh flow when you can.
+ */
 export function browserStore(prefix = "barako"): TokenStore {
   const tk = `${prefix}_token`;
   const rk = `${prefix}_refresh`;
