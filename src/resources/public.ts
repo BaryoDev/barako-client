@@ -67,14 +67,14 @@ export function publicResource(transport: Transport, baseUrl: string): PublicRes
   };
 
   return {
-    list: (type, query) =>
+    list: async (type, query) =>
       transport.request<Paged<PublicContent>>({
         method: "GET",
         path: `/api/public/${pathSegment(type)}`,
         query: query && { page: query.page, pageSize: query.pageSize },
       }),
 
-    bySlug: (type, slug) =>
+    bySlug: async (type, slug) =>
       orNull(
         transport.request<PublicContent>({
           method: "GET",
