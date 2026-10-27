@@ -1,3 +1,4 @@
+import { pathSegment } from "../path";
 import type { Transport } from "../transport";
 import { BarakoError } from "../errors";
 import type { MenuItem, Paged, PublicContent, PublicMenu } from "../types";
@@ -69,7 +70,7 @@ export function publicResource(transport: Transport, baseUrl: string): PublicRes
     list: (type, query) =>
       transport.request<Paged<PublicContent>>({
         method: "GET",
-        path: `/api/public/${encodeURIComponent(type)}`,
+        path: `/api/public/${pathSegment(type)}`,
         query: query && { page: query.page, pageSize: query.pageSize },
       }),
 
@@ -77,7 +78,7 @@ export function publicResource(transport: Transport, baseUrl: string): PublicRes
       orNull(
         transport.request<PublicContent>({
           method: "GET",
-          path: `/api/public/${encodeURIComponent(type)}/${encodeURIComponent(slug)}`,
+          path: `/api/public/${pathSegment(type)}/${pathSegment(slug)}`,
         }),
       ),
 
@@ -85,7 +86,7 @@ export function publicResource(transport: Transport, baseUrl: string): PublicRes
       const content = await orNull(
         transport.request<PublicContent>({
           method: "GET",
-          path: `/api/public/menu/${encodeURIComponent(slug)}`,
+          path: `/api/public/menu/${pathSegment(slug)}`,
         }),
       );
       if (!content) return null;
@@ -97,6 +98,6 @@ export function publicResource(transport: Transport, baseUrl: string): PublicRes
       };
     },
 
-    fileUrl: (id) => `${base}/api/public/files/${encodeURIComponent(id)}`,
+    fileUrl: (id) => `${base}/api/public/files/${pathSegment(id)}`,
   };
 }
