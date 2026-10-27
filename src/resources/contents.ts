@@ -41,7 +41,7 @@ export function contentsResource(transport: Transport): ContentsResource {
         },
       }),
 
-    get: (id) => transport.request<Content>({ method: "GET", path: `/api/contents/${id}` }),
+    get: (id) => transport.request<Content>({ method: "GET", path: `/api/contents/${encodeURIComponent(id)}` }),
 
     create: (input) =>
       transport.request<WriteResult>({ method: "POST", path: "/api/contents", body: input }),
@@ -49,20 +49,20 @@ export function contentsResource(transport: Transport): ContentsResource {
     update: (id, input) =>
       transport.request<WriteResult>({
         method: "PUT",
-        path: `/api/contents/${id}`,
+        path: `/api/contents/${encodeURIComponent(id)}`,
         body: { id, ...input },
       }),
 
     setStatus: (id, status) =>
       transport.request<{ message?: string }>({
         method: "PUT",
-        path: `/api/contents/${id}/status`,
+        path: `/api/contents/${encodeURIComponent(id)}/status`,
         body: { id, newStatus: status },
       }),
 
     history: (id) =>
       allPages((query) =>
-        transport.request<Paged<ContentVersion>>({ method: "GET", path: `/api/contents/${id}/history`, query }),
+        transport.request<Paged<ContentVersion>>({ method: "GET", path: `/api/contents/${encodeURIComponent(id)}/history`, query }),
       ),
   };
 }

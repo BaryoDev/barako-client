@@ -356,3 +356,20 @@ describe("lists that return every item", () => {
     expect(fetchImpl.calls).toHaveLength(1);
   });
 });
+
+describe("path encoding", () => {
+  it("encodes content ids in request paths", async () => {
+    const fetchImpl = mockFetch([{ body: {} }, { body: {} }, { body: {} }, { body: { items: [], page: 1 } }]);
+    const cms = createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: fetchImpl });
+
+    await cms.contents.get("../x");
+    await cms.contents.update("a/b", { data: {} } as never);
+    await cms.contents.setStatus("a/b", "Published" as never);
+    await cms.contents.history("../x");
+
+    expect(fetchImpl.calls[0].url).toBe(`${BASE}/api/contents/..%2Fx`);
+    expect(fetchImpl.calls[1].url).toBe(`${BASE}/api/contents/a%2Fb`);
+    expect(fetchImpl.calls[2].url).toBe(`${BASE}/api/contents/a%2Fb/status`);
+    expect(fetchImpl.calls[3].url).toContain(`${BASE}/api/contents/..%2Fx/history`);
+  });
+});
