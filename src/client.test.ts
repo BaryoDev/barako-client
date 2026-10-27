@@ -372,4 +372,15 @@ describe("path encoding", () => {
     expect(fetchImpl.calls[2].url).toBe(`${BASE}/api/contents/a%2Fb/status`);
     expect(fetchImpl.calls[3].url).toContain(`${BASE}/api/contents/..%2Fx/history`);
   });
+
+  it("refuses empty and dot segments", async () => {
+    const fetchImpl = mockFetch([{ body: {} }]);
+    const cms = createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: fetchImpl });
+
+    for (const bad of ["", ".", ".."]) {
+      await expect((async () => cms.contents.get(bad))()).rejects.toThrow(/path segment/);
+      await expect((async () => cms.contents.setStatus(bad, "Published" as never))()).rejects.toThrow(/path segment/);
+    }
+    expect(fetchImpl.calls).toHaveLength(0);
+  });
 });

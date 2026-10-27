@@ -1,3 +1,4 @@
+import { pathSegment } from "../path";
 import type { Transport } from "../transport";
 import type {
   Content,
@@ -41,7 +42,7 @@ export function contentsResource(transport: Transport): ContentsResource {
         },
       }),
 
-    get: (id) => transport.request<Content>({ method: "GET", path: `/api/contents/${encodeURIComponent(id)}` }),
+    get: (id) => transport.request<Content>({ method: "GET", path: `/api/contents/${pathSegment(id)}` }),
 
     create: (input) =>
       transport.request<WriteResult>({ method: "POST", path: "/api/contents", body: input }),
@@ -49,20 +50,20 @@ export function contentsResource(transport: Transport): ContentsResource {
     update: (id, input) =>
       transport.request<WriteResult>({
         method: "PUT",
-        path: `/api/contents/${encodeURIComponent(id)}`,
+        path: `/api/contents/${pathSegment(id)}`,
         body: { id, ...input },
       }),
 
     setStatus: (id, status) =>
       transport.request<{ message?: string }>({
         method: "PUT",
-        path: `/api/contents/${encodeURIComponent(id)}/status`,
+        path: `/api/contents/${pathSegment(id)}/status`,
         body: { id, newStatus: status },
       }),
 
     history: (id) =>
       allPages((query) =>
-        transport.request<Paged<ContentVersion>>({ method: "GET", path: `/api/contents/${encodeURIComponent(id)}/history`, query }),
+        transport.request<Paged<ContentVersion>>({ method: "GET", path: `/api/contents/${pathSegment(id)}/history`, query }),
       ),
   };
 }
