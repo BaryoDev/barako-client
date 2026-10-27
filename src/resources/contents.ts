@@ -42,19 +42,19 @@ export function contentsResource(transport: Transport): ContentsResource {
         },
       }),
 
-    get: (id) => transport.request<Content>({ method: "GET", path: `/api/contents/${pathSegment(id)}` }),
+    get: async (id) => transport.request<Content>({ method: "GET", path: `/api/contents/${pathSegment(id)}` }),
 
     create: (input) =>
       transport.request<WriteResult>({ method: "POST", path: "/api/contents", body: input }),
 
-    update: (id, input) =>
+    update: async (id, input) =>
       transport.request<WriteResult>({
         method: "PUT",
         path: `/api/contents/${pathSegment(id)}`,
         body: { id, ...input },
       }),
 
-    setStatus: (id, status) =>
+    setStatus: async (id, status) =>
       transport.request<{ message?: string }>({
         method: "PUT",
         path: `/api/contents/${pathSegment(id)}/status`,
