@@ -1,0 +1,38 @@
+# Throwaway stack for the integration suite. Test values only, never reuse them.
+#
+#   docker compose -f cli/test/compose.yml up -d
+#   BARAKO_URL=http://127.0.0.1:5188 npm run test:int
+#   docker compose -f cli/test/compose.yml down -v
+#
+# The image needs the core release that serves the CLI routes (5.8.0 or later).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a # pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: barako_cli_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: cli-test-db-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  app:
+    image: ghcr.io/baryodev/barako-cms:${BARAKO_CMS_TAG:-5.8.0}
+    ports:
+      - "127.0.0.1:5188:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: Host=postgres;Database=barako_cli_test;Username=postgres;Password=cli-test-db-password
+      JWT__Key: cli-test-jwt-key-not-a-secret-0123456789abcdef
+      InitialAdmin__Username: cliadmin
+      InitialAdmin__Password: Cli-Test-Admin-1234!
+      # The suite registers its own user and signs in as it, so no mailbox is needed.
+      Auth__RequireEmailVerification: "false"
+      Auth__AcknowledgeUnverifiedRegistration: "true"
+      Swagger__Enabled: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
