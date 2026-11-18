@@ -31,7 +31,7 @@ Every command accepts `--url`, `--key-file` and `-o json|text`. The default is `
 
 | Command | Example |
 | --- | --- |
-| `commands` | `barako commands` lists every command and its arguments. Needs no connection. |
+| `commands` | `barako commands` returns `{commands, globals}`: every command and its arguments, plus the global options. Needs no connection. |
 | `types` | `barako types` |
 | `schema <type>` | `barako schema post` |
 | `content list <type>` | `barako content list post --status published --limit 10` |

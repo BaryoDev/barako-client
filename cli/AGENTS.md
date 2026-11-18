@@ -9,7 +9,7 @@
 Set `BARAKO_URL` and `BARAKO_API_KEY` in the environment. Never put the key in an argument, a file you
 commit or your output. Use `--key-file` if you must pass a file.
 
-Run `barako commands` once to see every command and argument.
+Run `barako commands` once to see every command and argument. The result has `commands` and `globals` (options every command accepts).
 
 ## Write a post
 
@@ -18,7 +18,7 @@ Do these in order.
 1. `barako schema post`. Read the fields and which are required. Use the exact field names.
 2. `barako content create post --set Title=... --set Slug=... --set-file Body=body.md --dry-run`.
    Fix anything that exits 2 before going on. Nothing is saved.
-3. `barako content create post ...` with the same arguments. The entry is a draft. Keep `result.id`.
+3. Run the same `barako content create post ...` again with the same field arguments but without `--dry-run`. The entry is a draft. Keep `result.id`.
    Add `--idempotency-key <value>` if you might retry.
 4. `barako content get <id>`. Check the data and note `version`.
 5. To change it: `barako content update <id> --set Field=value --expect-version <version>`.

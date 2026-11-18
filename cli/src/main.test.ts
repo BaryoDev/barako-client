@@ -30,8 +30,10 @@ describe("run", () => {
     expect(h.out[0]!.stream).toBe("stdout");
     const body = JSON.parse(h.out[0]!.text);
     expect(body.ok).toBe(true);
-    expect(Array.isArray(body.result)).toBe(true);
-    for (const item of body.result) {
+    expect(Array.isArray(body.result.commands)).toBe(true);
+    expect(body.result.commands.map((c: { name: string }) => c.name)).toContain("commands");
+    expect(body.result.globals.map((g: { name: string }) => g.name)).toEqual(["url", "key-file", "output"]);
+    for (const item of body.result.commands) {
       expect(item).toHaveProperty("name");
       expect(item).toHaveProperty("summary");
       expect(item).toHaveProperty("args");

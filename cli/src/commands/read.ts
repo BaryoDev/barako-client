@@ -85,7 +85,12 @@ const listCommand: Command = {
         items.length = Math.min(items.length, ALL_CAP);
         break;
       }
-      if (!res?.hasNextPage || got.length === 0) break;
+      if (!res?.hasNextPage) break;
+      if (got.length === 0) {
+        // An empty page with more to come means the listing is incomplete.
+        truncated = true;
+        break;
+      }
     }
     return { items, truncated };
   },

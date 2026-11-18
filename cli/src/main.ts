@@ -16,13 +16,25 @@ export interface Io {
 
 const SECRET_FLAGS = ["--api-key", "--apikey", "--key", "--token", "--secret"];
 
+/** Options every command accepts. The parser and `barako commands` both read this. */
+const GLOBAL_OPTIONS: (ArgSpec & { short?: string })[] = [
+  { name: "url", kind: "flag", type: "string", description: "API base URL. Default is BARAKO_URL." },
+  { name: "key-file", kind: "flag", type: "string", description: "File holding the API key. Default is BARAKO_API_KEY." },
+  { name: "output", short: "o", kind: "flag", type: "string", description: "json (default) or text." },
+];
+
 const commandsCommand: Command = {
   name: "commands",
-  summary: "List every command with its arguments.",
+  summary: "List every command with its arguments, and the global options.",
   args: [],
   offline: true,
   async run() {
-    return commands.map((c) => ({ name: c.name, summary: c.summary, args: c.args }));
+    const list = [commandsCommand, ...commands].map((c) => ({
+      name: c.name,
+      summary: c.summary,
+      args: c.args,
+    }));
+    return { commands: list, globals: GLOBAL_OPTIONS };
   },
 };
 
@@ -38,11 +50,10 @@ function findCommand(argv: string[]): { command: Command; rest: string[] } | und
 }
 
 function parseCommandArgs(command: Command, rest: string[]): Record<string, unknown> {
-  const options: Record<string, { type: "string" | "boolean"; multiple?: boolean; short?: string }> = {
-    url: { type: "string" },
-    "key-file": { type: "string" },
-    output: { type: "string", short: "o" },
-  };
+  const options: Record<string, { type: "string" | "boolean"; multiple?: boolean; short?: string }> = {};
+  for (const g of GLOBAL_OPTIONS) {
+    options[g.name] = { type: "string", ...(g.short ? { short: g.short } : {}) };
+  }
   for (const a of command.args) {
     if (a.kind !== "flag") continue;
     options[a.name] = {

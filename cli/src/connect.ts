@@ -17,7 +17,10 @@ export function connect(
     throw new CliError("usage", "No API URL. Set BARAKO_URL or pass --url.");
   }
   let key: string | undefined;
-  if (flags.keyFile) {
+  if (flags.keyFile !== undefined) {
+    if (flags.keyFile.trim() === "") {
+      throw new CliError("usage", "--key-file needs a path.");
+    }
     try {
       key = readFile(flags.keyFile).replace(/[\r\n]+$/, "").trim();
     } catch {

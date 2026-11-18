@@ -34,6 +34,15 @@ describe("connect", () => {
     expect(secret).toBe("from-file");
   });
 
+  it("treats an empty --key-file as a usage error, not as absent", () => {
+    try {
+      connect({ BARAKO_URL: "http://x", BARAKO_API_KEY: "e" }, { keyFile: "" }, noFile);
+      expect.unreachable();
+    } catch (e) {
+      expect((e as CliError).code).toBe("usage");
+    }
+  });
+
   it("uses the env key and URL otherwise", () => {
     const { secret } = connect({ BARAKO_URL: "http://x", BARAKO_API_KEY: "e" }, {}, noFile);
     expect(secret).toBe("e");

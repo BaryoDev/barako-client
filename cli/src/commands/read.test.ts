@@ -90,6 +90,20 @@ describe("read commands", () => {
     expect(list).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2 }));
   });
 
+  it("content list --all sets truncated when an intermediate page is empty but has a next page", async () => {
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce(page([{ id: "a" }], true))
+      .mockResolvedValueOnce(page([], true));
+    const res = (await exec("content list", fake({ contents: { list } }), { type: "post", all: true })) as {
+      items: unknown[];
+      truncated: boolean;
+    };
+    expect(res.items).toHaveLength(1);
+    expect(res.truncated).toBe(true);
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
   it("content list --all stops at 5000 entries and sets truncated", async () => {
     const full = Array.from({ length: 100 }, (_, i) => ({ id: String(i) }));
     const list = vi.fn().mockResolvedValue(page(full, true));
