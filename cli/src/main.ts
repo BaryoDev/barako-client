@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { connect, type Env } from "./connect";
 import { CliError, render, scrubText, toCliError, type Outcome } from "./output";
 import { commands, type ArgSpec, type Command } from "./registry";
+import "./commands/destructive";
 import "./commands/read";
 import "./commands/status";
 import "./commands/write";
