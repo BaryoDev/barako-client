@@ -104,35 +104,43 @@ export interface Rendered {
 
 const REDACTED = "[redacted]";
 
-/** The key as it may appear raw or URL-encoded. JSON escaping happens after the scrub. */
+/** The key as it may appear raw, JSON-escaped or URL-encoded. */
 function forms(secret: string): string[] {
-  const all = [secret, encodeURIComponent(secret)];
+  const all = [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)];
   return [...new Set(all)].filter((f) => f.length > 0);
 }
 
-export function scrubText(text: string, secret: string): string {
-  return redact(text, secret);
+type Secrets = string | readonly (string | undefined)[] | undefined;
+
+function list(secrets: Secrets): string[] {
+  const arr = typeof secrets === "string" ? [secrets] : (secrets ?? []);
+  // Longest first, so a secret that contains another is fully removed.
+  return arr.filter((x): x is string => !!x).sort((x, y) => y.length - x.length);
 }
 
-function redact(text: string, secret: string): string {
+export function scrubText(text: string, secrets: Secrets): string {
+  return redact(text, list(secrets));
+}
+
+function redact(text: string, secrets: string[]): string {
   let out = text;
-  for (const f of forms(secret)) out = out.split(f).join(REDACTED);
+  for (const secret of secrets) for (const f of forms(secret)) out = out.split(f).join(REDACTED);
   return out;
 }
 
-function scrub(value: unknown, secret: string, seen: WeakSet<object>): unknown {
-  if (typeof value === "string") return redact(value, secret);
+function scrub(value: unknown, secrets: string[], seen: WeakSet<object>): unknown {
+  if (typeof value === "string") return redact(value, secrets);
   if (value === null || typeof value !== "object") return value;
   // `seen` holds the current ancestors only, so a shared reference is kept and a cycle is cut.
   if (seen.has(value)) return REDACTED;
   seen.add(value);
   let out: unknown;
   if (Array.isArray(value)) {
-    out = value.map((v) => scrub(v, secret, seen));
+    out = value.map((v) => scrub(v, secrets, seen));
   } else {
     const o: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      o[redact(k, secret)] = scrub(v, secret, seen);
+      o[redact(k, secrets)] = scrub(v, secrets, seen);
     }
     out = o;
   }
@@ -140,20 +148,39 @@ function scrub(value: unknown, secret: string, seen: WeakSet<object>): unknown {
   return out;
 }
 
-export function render(outcome: Outcome, secret: string | undefined): Rendered {
-  const body = outcome.ok
-    ? { ok: true, result: outcome.result ?? null }
-    : {
+const WITHHELD =
+  JSON.stringify({
+    ok: false,
+    error: { code: "server", status: 0, message: "output withheld: it contained the API key" },
+  }) + "\n";
+
+export function render(outcome: Outcome, secrets: Secrets): Rendered {
+  const all = list(secrets);
+  const clean = (v: unknown) => (all.length ? scrub(v, all, new WeakSet()) : v);
+  // Envelope keys, code and status are fixed and never scrubbed.
+  const payload = outcome.ok
+    ? [clean(outcome.result ?? null)]
+    : [clean(outcome.error.message), clean(outcome.error.details ?? null)];
+  // Fail closed: serialize the scrubbed payload and make sure no form of a key survived
+  // (for example one produced by a toJSON method after the scrub).
+  const serialized = payload.map((p) => JSON.stringify(p) ?? "null");
+  const joined = serialized.join("\n");
+  for (const secret of all) {
+    if (forms(secret).some((f) => joined.includes(f))) {
+      return { stream: "stderr", text: WITHHELD, exit: exitFor("server") };
+    }
+  }
+  const text = outcome.ok
+    ? `{"ok":true,"result":${serialized[0]}}`
+    : JSON.stringify({
         ok: false,
         error: {
           code: outcome.error.code,
           status: outcome.error.status ?? null,
-          message: outcome.error.message,
-          details: outcome.error.details ?? null,
+          message: payload[0],
+          details: payload[1],
         },
-      };
-  const safe = secret ? scrub(body, secret, new WeakSet()) : body;
-  const text = JSON.stringify(safe) ?? "null";
+      });
   return outcome.ok
     ? { stream: "stdout", text: text + "\n", exit: 0 }
     : { stream: "stderr", text: text + "\n", exit: exitFor(outcome.error.code) };

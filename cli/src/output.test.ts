@@ -79,6 +79,29 @@ describe("render", () => {
     expect(JSON.parse(r.text).result).toEqual({ x: { n: 1 }, y: { n: 1 } });
   });
 
+  it("leaves ok:true intact when the secret is k", () => {
+    const r = render({ ok: true, result: { a: 1 } }, "k");
+    expect(JSON.parse(r.text)).toEqual({ ok: true, result: { a: 1 } });
+  });
+
+  it("keeps the error code when the secret is a piece of it", () => {
+    const r = render({ ok: false, error: new CliError("not_found", "found it") }, "found");
+    const body = JSON.parse(r.text);
+    expect(body.error.code).toBe("not_found");
+    expect(body.error.message).toBe("[redacted] it");
+  });
+
+  it("withholds the output when a key form survives the scrub", () => {
+    const secret = "bcms_secret";
+    // toJSON runs at stringify time, after the scrub has walked the value.
+    const result = { toJSON: () => `leak ${secret}` };
+    const r = render({ ok: true, result }, secret);
+    expect(r.stream).toBe("stderr");
+    expect(r.exit).toBe(6);
+    expect(r.text).not.toContain(secret);
+    expect(JSON.parse(r.text).error.message).toBe("output withheld: it contained the API key");
+  });
+
   it("scrubs a secret shorter than 8 characters", () => {
     const r = render({ ok: false, error: new CliError("usage", "bad abc") }, "abc");
     expect(r.text).not.toContain("abc");

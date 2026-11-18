@@ -106,27 +106,38 @@ function toText(outcome: Outcome): string {
   return (typeof r === "string" ? r : JSON.stringify(r, null, 2)) + "\n";
 }
 
-/** Find the key (key file first, then env) before anything else runs, so every
- *  output path can scrub it. Failures here are reported later by connect(). */
-function earlySecret(argv: string[], env: Env, io: Io): string | undefined {
-  let keyFile: string | undefined;
-  for (let i = 0; i < argv.length; i++) {
-    const t = argv[i]!;
-    if (t === "--key-file") keyFile = argv[i + 1];
-    else if (t.startsWith("--key-file=")) keyFile = t.slice("--key-file=".length);
+/** Every key candidate to scrub: the env key plus the contents of any key file named
+ *  before `--`. connect() adds the key it actually used. */
+function candidateSecrets(argv: string[], env: Env, io: Io): string[] {
+  const out: string[] = [];
+  if (env.BARAKO_API_KEY?.trim()) out.push(env.BARAKO_API_KEY.trim());
+  const end = argv.indexOf("--");
+  const scan = end === -1 ? argv : argv.slice(0, end);
+  const files: string[] = [];
+  for (let i = 0; i < scan.length; i++) {
+    const t = scan[i]!;
+    if (t === "--key-file" && scan[i + 1] !== undefined) files.push(scan[i + 1]!);
+    else if (t.startsWith("--key-file=")) files.push(t.slice("--key-file=".length));
   }
-  if (keyFile) {
+  for (const f of files) {
     try {
-      return io.readFile(keyFile).replace(/[\r\n]+$/, "").trim() || undefined;
+      const v = io.readFile(f).replace(/[\r\n]+$/, "").trim();
+      if (v) out.push(v);
     } catch {
-      return undefined;
+      // connect() reports an unreadable file.
     }
   }
-  return env.BARAKO_API_KEY?.trim() || undefined;
+  return out;
 }
 
+const noClient = new Proxy({}, {
+  get() {
+    throw new CliError("usage", "This command needs no connection.");
+  },
+}) as BarakoClient;
+
 export async function run(argv: string[], env: Env, io: Io): Promise<number> {
-  const secret = earlySecret(argv, env, io);
+  const secrets = candidateSecrets(argv, env, io);
   let outcome: Outcome;
   let format = "json";
   try {
@@ -150,22 +161,24 @@ export async function run(argv: string[], env: Env, io: Io): Promise<number> {
       throw new CliError("usage", `Unknown output format "${output}". Use json or text.`);
     }
     format = output ?? "json";
-    let client: BarakoClient = undefined as never;
+    let client: BarakoClient = noClient;
     if (!found.command.offline) {
-      client = connect(
+      const conn = connect(
         env,
         { url: args.__url as string | undefined, keyFile: args.__keyFile as string | undefined },
         io.readFile,
-      ).client;
+      );
+      secrets.push(conn.secret);
+      client = conn.client;
     }
     const result = await found.command.run({ client, readFile: io.readFile }, args);
     outcome = { ok: true, result };
   } catch (err) {
     outcome = { ok: false, error: toCliError(err) };
   }
-  const rendered = render(outcome, secret);
+  const rendered = render(outcome, secrets);
   if (format === "text") {
-    const text = secret ? scrubText(toText(outcome), secret) : toText(outcome);
+    const text = scrubText(toText(outcome), secrets);
     io.write(rendered.stream, text);
   } else {
     io.write(rendered.stream, rendered.text);

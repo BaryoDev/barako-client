@@ -61,4 +61,18 @@ describe("run", () => {
     await run(["commands", `--apiKey=${key}`, key], { BARAKO_API_KEY: key }, h2.io);
     expect(h2.out.map((o) => o.text).join("")).not.toContain(key);
   });
+
+  it("scrubs both the env key and the key file key from a failure", async () => {
+    const h = harness();
+    h.io.readFile = () => "file-key-999\n";
+    const code = await run(
+      ["commands", "--bogus", "--key-file", "/k"],
+      { BARAKO_API_KEY: "env-key-111", BARAKO_URL: "http://x" },
+      h.io,
+    );
+    expect(code).toBe(1);
+    const all = h.out.map((o) => o.text).join("");
+    expect(all).not.toContain("env-key-111");
+    expect(all).not.toContain("file-key-999");
+  });
 });
