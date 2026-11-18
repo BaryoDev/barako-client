@@ -45,7 +45,7 @@ async function setStatus(client: RunContext["client"], id: string, to: number, t
         { status: 400, details: e.details },
       );
     }
-    throw err;
+    throw e;
   }
 }
 
