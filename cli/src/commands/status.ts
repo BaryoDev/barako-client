@@ -38,7 +38,7 @@ async function setStatus(client: RunContext["client"], id: string, to: number, t
     return { id, status: toName, ...(res?.message === undefined ? {} : { message: res.message }) };
   } catch (err) {
     const e = toCliError(err);
-    if (e.status === 400) {
+    if (e.status === 400 && /lifecycle|transition/i.test(`${e.message} ${JSON.stringify(e.details ?? "")}`)) {
       throw new CliError(
         "validation",
         `${e.message} If this content type has a lifecycle, use "barako content transition <id> <name>" instead.`,

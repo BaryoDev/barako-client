@@ -115,7 +115,7 @@ const updateCommand: Command = {
           details: { currentVersion: latest, server: base.details },
         });
       }
-      throw err;
+      throw toCliError(err);
     }
   },
 };

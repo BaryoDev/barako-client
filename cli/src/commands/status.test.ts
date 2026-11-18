@@ -71,4 +71,24 @@ describe("status commands", () => {
     await exec("content schedule", { get, schedule }, { id: "a", "publish-at": "2026-12-01T09:00:00Z" });
     expect(schedule).toHaveBeenCalledWith("a", { publishAt: "2026-12-01T09:00:00Z", unpublishAt: null, version: 3 });
   });
+
+  it("passes a 400 that does not mention a lifecycle through as validation", async () => {
+    const setStatus = vi.fn().mockRejectedValue(new BarakoError(400, "Invalid status value"));
+    const e = await fails(() => exec("content publish", { setStatus }, { id: "a" }));
+    expect(e.code).toBe("validation");
+    expect(e.message).not.toContain("barako content transition");
+  });
+
+  it("transition sends data from --set", async () => {
+    const transition = vi.fn().mockResolvedValue({});
+    await exec("content transition", { transition }, { id: "a", name: "approve", set: ["Reason=ok"] });
+    expect(transition).toHaveBeenCalledWith("a", "approve", { Reason: "ok" });
+  });
+
+  it("schedule with --unpublish-at sends both times", async () => {
+    const get = vi.fn().mockResolvedValue({ version: 2 });
+    const schedule = vi.fn().mockResolvedValue({});
+    await exec("content schedule", { get, schedule }, { id: "a", "publish-at": "2026-12-01T09:00:00Z", "unpublish-at": "2027-01-01T09:00:00Z" });
+    expect(schedule).toHaveBeenCalledWith("a", { publishAt: "2026-12-01T09:00:00Z", unpublishAt: "2027-01-01T09:00:00Z", version: 2 });
+  });
 });

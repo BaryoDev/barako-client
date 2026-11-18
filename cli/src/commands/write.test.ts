@@ -120,4 +120,19 @@ describe("content update", () => {
     await exec("content update", { get, update }, { id: "i1", replace: true, file: "e.json" }, { "e.json": '{"Only":"this"}' });
     expect(update.mock.calls[0]![1].data).toEqual({ Only: "this" });
   });
+
+  it("returns dryRun and changes from update --dry-run and makes no write", async () => {
+    const get = vi.fn().mockResolvedValue(entry());
+    const update = vi.fn().mockResolvedValue({ dryRun: true, changes: [{ field: "Title" }] });
+    const out = await exec("content update", { get, update }, { id: "i1", set: ["Title=y"], "dry-run": true });
+    expect(update.mock.calls[0]![2]).toEqual({ ifMatch: '"e5"', dryRun: true });
+    expect(out).toMatchObject({ dryRun: true, changes: [{ field: "Title" }] });
+  });
+
+  it("lets --set win over --file on the same key", async () => {
+    const get = vi.fn().mockResolvedValue(entry());
+    const update = vi.fn().mockResolvedValue({});
+    await exec("content update", { get, update }, { id: "i1", file: "p.json", set: ["Title=set"] }, { "p.json": '{"Title":"file","Body":"fb"}' });
+    expect(update.mock.calls[0]![1].data).toEqual({ Title: "set", Body: "fb" });
+  });
 });
