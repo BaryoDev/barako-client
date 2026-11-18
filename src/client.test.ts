@@ -6,7 +6,7 @@ import { createClient, BarakoError, tenantOfToken, memoryStore } from "./index";
 const BASE = "https://cms.test/barakocms-api";
 
 /** A fake fetch that records calls and replays programmed responses in order. */
-function mockFetch(responses: Array<{ status?: number; body?: unknown; text?: string }>) {
+function mockFetch(responses: Array<{ status?: number; body?: unknown; text?: string; headers?: Record<string, string> }>) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   let i = 0;
   const fn = (async (url: string, init: RequestInit) => {
@@ -17,7 +17,7 @@ function mockFetch(responses: Array<{ status?: number; body?: unknown; text?: st
     const payload = r.text ?? (r.body !== undefined ? JSON.stringify(r.body) : "");
     // 204/205/304 must have a null body per the Response constructor.
     const nullBody = status === 204 || status === 205 || status === 304;
-    return new Response(nullBody || payload === "" ? null : payload, { status });
+    return new Response(nullBody || payload === "" ? null : payload, { status, headers: r.headers });
   }) as unknown as typeof fetch;
   return Object.assign(fn, { calls });
 }
@@ -382,5 +382,124 @@ describe("path encoding", () => {
       await expect((async () => cms.contents.setStatus(bad, "Published" as never))()).rejects.toThrow(/path segment/);
     }
     expect(fetchImpl.calls).toHaveLength(0);
+  });
+});
+
+// --- authoring calls -------------------------------------------------------
+
+function hdr(init: RequestInit, name: string): string | undefined {
+  return (init.headers as Record<string, string>)?.[name];
+}
+
+describe("authoring calls", () => {
+  const id = "11111111-1111-1111-1111-111111111111";
+  const key = (f: ReturnType<typeof mockFetch>) => createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: f });
+
+  it("get returns the ETag header as etag", async () => {
+    const f = mockFetch([{ body: { id }, headers: { ETag: '"abc"' } }]);
+    const got = await key(f).contents.get(id);
+    expect(f.calls[0].url).toBe(`${BASE}/api/contents/${id}`);
+    expect(got.etag).toBe('"abc"');
+  });
+
+  it("get leaves etag undefined when there is no header", async () => {
+    const f = mockFetch([{ body: { id } }]);
+    expect((await key(f).contents.get(id)).etag).toBeUndefined();
+  });
+
+  it("update with ifMatch sends If-Match and returns the new etag", async () => {
+    const f = mockFetch([{ body: { id, version: 2 }, headers: { ETag: '"new"' } }]);
+    const res = await key(f).contents.update(id, { data: { a: 1 } }, { ifMatch: '"old"' });
+    expect(f.calls[0].init.method).toBe("PUT");
+    expect(hdr(f.calls[0].init, "If-Match")).toBe('"old"');
+    expect(JSON.parse(f.calls[0].init.body as string)).toEqual({ id, data: { a: 1 } });
+    expect(res).toMatchObject({ id, version: 2, etag: '"new"' });
+  });
+
+  it("update with dryRun sends dryRun and returns the changes", async () => {
+    const changes = [{ field: "title", from: "a", to: "b" }];
+    const f = mockFetch([{ body: { id, dryRun: true, changes } }]);
+    const res = await key(f).contents.update(id, { data: { title: "b" } }, { dryRun: true });
+    expect(JSON.parse(f.calls[0].init.body as string)).toEqual({ id, data: { title: "b" }, dryRun: true });
+    expect(res).toMatchObject({ dryRun: true, changes });
+  });
+
+  it("create with idempotencyKey sends Idempotency-Key", async () => {
+    const f = mockFetch([{ body: { id, version: 1 } }]);
+    await key(f).contents.create({ contentType: "post", data: {} }, { idempotencyKey: "k1" });
+    expect(f.calls[0].init.method).toBe("POST");
+    expect(hdr(f.calls[0].init, "Idempotency-Key")).toBe("k1");
+    expect(JSON.parse(f.calls[0].init.body as string)).toEqual({ contentType: "post", data: {} });
+  });
+
+  it("create with dryRun sends dryRun in the body", async () => {
+    const f = mockFetch([{ body: { dryRun: true, changes: [] } }]);
+    const res = await key(f).contents.create({ contentType: "post", data: {} }, { dryRun: true });
+    expect(JSON.parse(f.calls[0].init.body as string)).toEqual({ contentType: "post", data: {}, dryRun: true });
+    expect(res).toMatchObject({ dryRun: true });
+  });
+
+  it("list sends search encoded", async () => {
+    const f = mockFetch([{ body: { items: [] } }]);
+    await key(f).contents.list({ search: "a b" });
+    expect(f.calls[0].url).toBe(`${BASE}/api/contents?search=a%20b`);
+  });
+
+  it("bySlug encodes both segments and returns etag", async () => {
+    const f = mockFetch([{ body: { id }, headers: { ETag: '"e"' } }]);
+    const got = await key(f).contents.bySlug("post", "a/b");
+    expect(f.calls[0].url).toBe(`${BASE}/api/contents/by-slug/post/a%2Fb`);
+    expect(got.etag).toBe('"e"');
+  });
+
+  it("transition sends the transition name to /status", async () => {
+    const f = mockFetch([{ body: { message: "ok" } }]);
+    await key(f).contents.transition(id, "submit");
+    expect(f.calls[0].init.method).toBe("PUT");
+    expect(f.calls[0].url).toBe(`${BASE}/api/contents/${id}/status`);
+    expect(JSON.parse(f.calls[0].init.body as string)).toEqual({ id, transition: "submit" });
+  });
+
+  it("schedule sends the scheduled times to /schedule", async () => {
+    const f = mockFetch([{ body: { message: "ok" } }]);
+    await key(f).contents.schedule(id, { publishAt: "2026-12-01T00:00:00Z" });
+    expect(f.calls[0].init.method).toBe("PUT");
+    expect(f.calls[0].url).toBe(`${BASE}/api/contents/${id}/schedule`);
+    expect(JSON.parse(f.calls[0].init.body as string)).toEqual({ id, scheduledPublishAt: "2026-12-01T00:00:00Z" });
+  });
+
+  it("rollback POSTs the version route", async () => {
+    const f = mockFetch([{ body: { id } }]);
+    await key(f).contents.rollback(id, "v1");
+    expect(f.calls[0].init.method).toBe("POST");
+    expect(f.calls[0].url).toBe(`${BASE}/api/contents/${id}/rollback/v1`);
+  });
+
+  it("erase DELETEs the erase route", async () => {
+    const f = mockFetch([{ status: 204 }]);
+    await expect(key(f).contents.erase(id)).resolves.toBeUndefined();
+    expect(f.calls[0].init.method).toBe("DELETE");
+    expect(f.calls[0].url).toBe(`${BASE}/api/contents/${id}/erase`);
+  });
+
+  it("contentTypes.readable returns the names", async () => {
+    const f = mockFetch([{ body: { items: [{ name: "post", displayName: "Post" }] } }]);
+    expect(await key(f).contentTypes.readable()).toEqual(["post"]);
+    expect(f.calls[0].url).toBe(`${BASE}/api/contents/types`);
+  });
+
+  it("contentTypes.get reads one type", async () => {
+    const f = mockFetch([{ body: { name: "post", fields: [] } }]);
+    await key(f).contentTypes.get("post");
+    expect(f.calls[0].url).toBe(`${BASE}/api/contents/types/post`);
+  });
+
+  it("blocks.schema and pages.tree read their routes", async () => {
+    const f = mockFetch([{ body: {} }, { body: {} }]);
+    const cms = key(f);
+    await cms.blocks.schema();
+    await cms.pages.tree();
+    expect(f.calls[0].url).toBe(`${BASE}/api/blocks/schema`);
+    expect(f.calls[1].url).toBe(`${BASE}/api/pages/tree`);
   });
 });

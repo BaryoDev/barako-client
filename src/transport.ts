@@ -25,6 +25,11 @@ export class Transport {
   }
 
   async request<T>(opts: RequestOptions): Promise<T> {
+    return (await this.requestWithHeaders<T>(opts)).body;
+  }
+
+  /** Same as request, but also returns the response headers (for ETag and the like). */
+  async requestWithHeaders<T>(opts: RequestOptions): Promise<{ body: T; headers: Headers }> {
     let res = await this.send(opts);
 
     if (res.status === 401 && !opts.noRetry && (await this.auth.recover())) {
@@ -36,9 +41,9 @@ export class Transport {
     }
 
     // 204 and empty bodies deserialize to undefined.
-    if (res.status === 204) return undefined as T;
+    if (res.status === 204) return { body: undefined as T, headers: res.headers };
     const text = await res.text();
-    return (text ? JSON.parse(text) : undefined) as T;
+    return { body: (text ? JSON.parse(text) : undefined) as T, headers: res.headers };
   }
 
   private send(opts: RequestOptions): Promise<Response> {
