@@ -125,8 +125,9 @@ const scheduleCommand: Command = {
     const id = args.id as string;
     const current = await client.contents.get(id);
     const v = (current as { version?: unknown }).version;
-    // Version 0 means none sent to the server (Schedule/Endpoint.cs:87), so it is only safe to
-    // send nothing when the entry has an ETag to show it is a normal entry with no event stream.
+    // Version 0 means none sent to the server (Schedule/Endpoint.cs:87). The schedule route reads no
+    // If-Match, so an entry with no event stream is scheduled last write wins. The ETag check only
+    // confirms the entry is a normal one with no event stream.
     if (!(typeof v === "number" && v > 0) && !(current as { etag?: unknown }).etag) {
       throw new CliError("version_required", "The server returned neither a version nor an ETag for this entry, so the schedule was not sent.");
     }

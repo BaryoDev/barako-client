@@ -94,7 +94,7 @@ const updateCommand: Command = {
     }
     const version = hasVersion ? reported : 0;
     const expected = args["expect-version"];
-    if (typeof expected === "number" && hasVersion && expected !== version) {
+    if (typeof expected === "number" && expected !== version) {
       throw new CliError("conflict", `The entry is at version ${version}, not the expected version.`, {
         details: { currentVersion: version },
       });
