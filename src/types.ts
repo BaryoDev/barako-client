@@ -1,11 +1,28 @@
 // Types mirroring the barakoCMS API surface. Hand-written for v0.1; a future version may generate
 // these from the API's OpenAPI document so they can't drift.
 
-/** Content lifecycle status. Matches the API's numeric enum. */
+/** Content lifecycle status. The API sends and accepts these names. */
 export enum ContentStatus {
-  Draft = 0,
-  Published = 1,
-  Archived = 2,
+  Draft = "Draft",
+  Published = "Published",
+  Archived = "Archived",
+  Scheduled = "Scheduled",
+}
+
+/** How visible a field or entry is. The API sends and accepts these names. */
+export enum SensitivityLevel {
+  Public = "Public",
+  Sensitive = "Sensitive",
+  Hidden = "Hidden",
+  Members = "Members",
+}
+
+/** How a field value is masked for callers who may not read it in full. */
+export enum FieldMask {
+  Default = "Default",
+  Remove = "Remove",
+  Redact = "Redact",
+  Last4 = "Last4",
 }
 
 /** A single content entry. `data` is the typed-per-content-type field bag. */
@@ -15,7 +32,7 @@ export interface Content {
   data: Record<string, unknown>;
   status: ContentStatus;
   version: number;
-  sensitivity?: number;
+  sensitivity?: SensitivityLevel;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -38,9 +55,9 @@ export interface FieldDefinition {
   isRequired: boolean;
   defaultValue?: unknown;
   validationRules?: Record<string, unknown>;
-  sensitivity?: number;
+  sensitivity?: SensitivityLevel;
   visibleToRoles?: string[];
-  mask?: number;
+  mask?: FieldMask;
 }
 
 export interface ContentTypeDefinition {
@@ -121,7 +138,7 @@ export interface CreateContentInput {
   contentType: string;
   data: Record<string, unknown>;
   status?: ContentStatus;
-  sensitivity?: number;
+  sensitivity?: SensitivityLevel;
 }
 
 export interface UpdateContentInput {

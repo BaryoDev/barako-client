@@ -1,4 +1,4 @@
-import type { ContentStatus } from "@baryodev/barako-client";
+import { ContentStatus } from "@baryodev/barako-client";
 import { parseSets } from "../fields";
 import { CliError, toCliError } from "../output";
 import { commands, type Command, type RunContext } from "../registry";
@@ -32,9 +32,9 @@ const DRY_ARG = {
   description: "Check the change on the client and write nothing.",
 } as const;
 
-async function setStatus(client: RunContext["client"], id: string, to: number, toName: string) {
+async function setStatus(client: RunContext["client"], id: string, to: ContentStatus, toName: string) {
   try {
-    const res = await client.contents.setStatus(id, to as ContentStatus);
+    const res = await client.contents.setStatus(id, to);
     return { id, status: toName, ...(res?.message === undefined ? {} : { message: res.message }) };
   } catch (err) {
     const e = toCliError(err);
@@ -49,7 +49,7 @@ async function setStatus(client: RunContext["client"], id: string, to: number, t
   }
 }
 
-function move(name: string, summary: string, to: number, toName: string): Command {
+function move(name: string, summary: string, to: ContentStatus, toName: string): Command {
   return {
     name: `content ${name}`,
     summary,
@@ -82,7 +82,7 @@ const restoreCommand: Command = {
       );
     }
     if (args["dry-run"] === true) return { dryRun: true, checkedBy: "client", from, to: "draft" };
-    return setStatus(client, id, 0, "draft");
+    return setStatus(client, id, ContentStatus.Draft, "draft");
   },
 };
 
@@ -138,9 +138,9 @@ const scheduleCommand: Command = {
 };
 
 commands.push(
-  move("publish", "Publish an entry.", 1, "published"),
-  move("unpublish", "Make a published entry a draft.", 0, "draft"),
-  move("archive", "Archive an entry.", 2, "archived"),
+  move("publish", "Publish an entry.", ContentStatus.Published, "published"),
+  move("unpublish", "Make a published entry a draft.", ContentStatus.Draft, "draft"),
+  move("archive", "Archive an entry.", ContentStatus.Archived, "archived"),
   restoreCommand,
   transitionCommand,
   scheduleCommand,

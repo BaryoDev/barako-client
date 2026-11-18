@@ -3,6 +3,7 @@ import type { Transport } from "../transport";
 import type {
   Content,
   ContentStatus,
+  SensitivityLevel,
   ContentVersion,
   CreateContentInput,
   DryRunResult,
@@ -29,7 +30,7 @@ export interface RollbackResult {
   updatedAt: string;
   status: ContentStatus;
   lastModifiedBy: string;
-  sensitivity: number;
+  sensitivity: SensitivityLevel;
 }
 
 export interface ContentsResource {
@@ -87,6 +88,7 @@ export function contentsResource(transport: Transport): ContentsResource {
           contentType: query.contentType,
           page: query.page,
           pageSize: query.pageSize,
+          // The list endpoint binds the status name from the query string (core EntriesListTests uses status=Draft).
           status: query.status,
           search: query.search,
         },

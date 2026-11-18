@@ -1,4 +1,4 @@
-import type { ContentStatus } from "@baryodev/barako-client";
+import { ContentStatus } from "@baryodev/barako-client";
 import { mergeData, parseSets, readDataFile } from "../fields";
 import { CliError, codeForStatus, toCliError } from "../output";
 import { commands, type ArgSpec, type Command } from "../registry";
@@ -48,7 +48,7 @@ const createCommand: Command = {
   ],
   async run({ client, readFile }, args) {
     const { patch } = patchFrom(args, readFile);
-    const status = (args.publish === true ? 1 : 0) as ContentStatus;
+    const status = args.publish === true ? ContentStatus.Published : ContentStatus.Draft;
     const opts: { dryRun?: boolean; idempotencyKey?: string } = {};
     if (args["dry-run"] === true) opts.dryRun = true;
     const key = str(args, "idempotency-key");

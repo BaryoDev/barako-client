@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createClient, BarakoError, tenantOfToken, memoryStore } from "./index";
+import { createClient, BarakoError, tenantOfToken, memoryStore, ContentStatus } from "./index";
 
 // --- helpers ---------------------------------------------------------------
 
@@ -213,7 +213,7 @@ describe("transport", () => {
   it("returns undefined for a 204 (e.g. a status change with no body)", async () => {
     const fetchImpl = mockFetch([{ status: 204 }]);
     const cms = createClient({ baseUrl: BASE, apiKey: "bcms_x", fetch: fetchImpl });
-    await expect(cms.contents.setStatus("id", 2)).resolves.toBeUndefined();
+    await expect(cms.contents.setStatus("id", ContentStatus.Archived)).resolves.toBeUndefined();
   });
 
   it("omits undefined query params", async () => {
@@ -357,6 +357,15 @@ describe("lists that return every item", () => {
   });
 });
 
+describe("status names", () => {
+  it("a get answering a status name compares equal to the enum", async () => {
+    const fetchImpl = mockFetch([{ body: { id: "1", contentType: "post", data: {}, status: "Published", version: 1 } }]);
+    const cms = createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: fetchImpl });
+    const entry = await cms.contents.get("1");
+    expect(entry.status === ContentStatus.Published).toBe(true);
+  });
+});
+
 describe("path encoding", () => {
   it("encodes content ids in request paths", async () => {
     const fetchImpl = mockFetch([{ body: {} }, { body: {} }, { body: {} }, { body: { items: [], page: 1 } }]);
@@ -364,7 +373,7 @@ describe("path encoding", () => {
 
     await cms.contents.get("../x");
     await cms.contents.update("a/b", { data: {} } as never);
-    await cms.contents.setStatus("a/b", "Published" as never);
+    await cms.contents.setStatus("a/b", ContentStatus.Published);
     await cms.contents.history("../x");
 
     expect(fetchImpl.calls[0].url).toBe(`${BASE}/api/contents/..%2Fx`);
@@ -379,7 +388,7 @@ describe("path encoding", () => {
 
     for (const bad of ["", ".", ".."]) {
       await expect((async () => cms.contents.get(bad))()).rejects.toThrow(/path segment/);
-      await expect((async () => cms.contents.setStatus(bad, "Published" as never))()).rejects.toThrow(/path segment/);
+      await expect((async () => cms.contents.setStatus(bad, ContentStatus.Published))()).rejects.toThrow(/path segment/);
     }
     expect(fetchImpl.calls).toHaveLength(0);
   });

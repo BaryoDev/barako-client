@@ -1,8 +1,13 @@
-import type { Content, ContentStatus, ListContentQuery } from "@baryodev/barako-client";
+import { ContentStatus, type Content, type ListContentQuery } from "@baryodev/barako-client";
 import { CliError } from "../output";
 import { commands, type Command } from "../registry";
 
-const STATUSES: Record<string, number> = { draft: 0, published: 1, archived: 2, scheduled: 3 };
+const STATUSES: Record<string, ContentStatus> = {
+  draft: ContentStatus.Draft,
+  published: ContentStatus.Published,
+  archived: ContentStatus.Archived,
+  scheduled: ContentStatus.Scheduled,
+};
 const DEFAULT_LIMIT = 20;
 const ALL_PAGE_SIZE = 100;
 const ALL_CAP = 5000;
@@ -12,7 +17,7 @@ function str(args: Record<string, unknown>, name: string): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
-function parseStatus(raw: string | undefined): number | undefined {
+function parseStatus(raw: string | undefined): ContentStatus | undefined {
   if (raw === undefined) return undefined;
   const n = STATUSES[raw];
   if (n === undefined || !Object.prototype.hasOwnProperty.call(STATUSES, raw)) {
@@ -61,7 +66,7 @@ const listCommand: Command = {
     const status = parseStatus(str(args, "status"));
     const limit = parseLimit(args.limit);
     const query: ListContentQuery = { contentType: str(args, "type")! };
-    if (status !== undefined) query.status = status as ContentStatus;
+    if (status !== undefined) query.status = status;
     const search = str(args, "search");
     if (search !== undefined) query.search = search;
 

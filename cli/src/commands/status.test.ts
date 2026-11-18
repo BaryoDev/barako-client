@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { BarakoError, type BarakoClient } from "@baryodev/barako-client";
+import { BarakoError, ContentStatus, type BarakoClient } from "@baryodev/barako-client";
 import { commands } from "../registry";
 import "./status";
 
@@ -18,19 +18,19 @@ async function fails(fn: () => Promise<unknown>): Promise<{ code: string; messag
 }
 
 describe("status commands", () => {
-  it("publish, unpublish and archive call setStatus with 1, 0 and 2", async () => {
+  it("publish, unpublish and archive call setStatus with Published, Draft and Archived", async () => {
     const setStatus = vi.fn().mockResolvedValue({});
     await exec("content publish", { setStatus }, { id: "a" });
     await exec("content unpublish", { setStatus }, { id: "a" });
     await exec("content archive", { setStatus }, { id: "a" });
-    expect(setStatus.mock.calls.map((c) => c[1])).toEqual([1, 0, 2]);
+    expect(setStatus.mock.calls.map((c) => c[1])).toEqual([ContentStatus.Published, ContentStatus.Draft, ContentStatus.Archived]);
   });
 
   it("restore on an archived entry calls setStatus with 0", async () => {
     const get = vi.fn().mockResolvedValue({ status: "Archived" });
     const setStatus = vi.fn().mockResolvedValue({});
     await exec("content restore", { get, setStatus }, { id: "a" });
-    expect(setStatus).toHaveBeenCalledWith("a", 0);
+    expect(setStatus).toHaveBeenCalledWith("a", ContentStatus.Draft);
   });
 
   it("restore on a published entry is a usage error that names unpublish", async () => {

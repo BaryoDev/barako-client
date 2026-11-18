@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { BarakoClient } from "@baryodev/barako-client";
+import { ContentStatus, type BarakoClient } from "@baryodev/barako-client";
 import { commands, type Command } from "../registry";
 import "./read";
 
@@ -37,16 +37,16 @@ const page = (items: unknown[], hasNextPage: boolean) => ({
 });
 
 describe("read commands", () => {
-  it("content list maps --status published to 1", async () => {
+  it("content list maps --status published to the enum", async () => {
     const list = vi.fn().mockResolvedValue(page([], false));
     await exec("content list", fake({ contents: { list } }), { type: "post", status: "published" });
-    expect(list).toHaveBeenCalledWith({ contentType: "post", status: 1, pageSize: 20 });
+    expect(list).toHaveBeenCalledWith({ contentType: "post", status: ContentStatus.Published, pageSize: 20 });
   });
 
-  it("content list maps every status name to its number", async () => {
+  it("content list maps every status name to its enum value", async () => {
     const list = vi.fn().mockResolvedValue(page([], false));
     const client = fake({ contents: { list } });
-    for (const [name, n] of [["draft", 0], ["published", 1], ["archived", 2], ["scheduled", 3]] as const) {
+    for (const [name, n] of [["draft", ContentStatus.Draft], ["published", ContentStatus.Published], ["archived", ContentStatus.Archived], ["scheduled", ContentStatus.Scheduled]] as const) {
       await exec("content list", client, { type: "post", status: name });
       expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ status: n }));
     }

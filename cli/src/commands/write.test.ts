@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { BarakoError, type BarakoClient } from "@baryodev/barako-client";
+import { BarakoError, ContentStatus, type BarakoClient } from "@baryodev/barako-client";
 import { commands } from "../registry";
 import "./write";
 
@@ -32,13 +32,13 @@ describe("content create", () => {
   it("creates a draft by default", async () => {
     const create = vi.fn().mockResolvedValue({ id: "n", version: 1 });
     await exec("content create", { create }, { type: "post", set: ["Title=x"] });
-    expect(create).toHaveBeenCalledWith({ contentType: "post", data: { Title: "x" }, status: 0 }, {});
+    expect(create).toHaveBeenCalledWith({ contentType: "post", data: { Title: "x" }, status: ContentStatus.Draft }, {});
   });
 
   it("publishes with --publish", async () => {
     const create = vi.fn().mockResolvedValue({});
     await exec("content create", { create }, { type: "post", set: ["Title=x"], publish: true });
-    expect(create.mock.calls[0]![0].status).toBe(1);
+    expect(create.mock.calls[0]![0].status).toBe(ContentStatus.Published);
   });
 
   it("passes the idempotency key", async () => {
