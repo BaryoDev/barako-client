@@ -460,12 +460,23 @@ describe("authoring calls", () => {
     expect(JSON.parse(f.calls[0].init.body as string)).toEqual({ id, transition: "submit" });
   });
 
+  it("transition sends data when given", async () => {
+    const f = mockFetch([{ body: {} }]);
+    await key(f).contents.transition(id, "submit", { note: "x" });
+    expect(JSON.parse(f.calls[0].init.body as string)).toEqual({ id, transition: "submit", data: { note: "x" } });
+  });
+
   it("schedule sends the scheduled times to /schedule", async () => {
     const f = mockFetch([{ body: { message: "ok" } }]);
-    await key(f).contents.schedule(id, { publishAt: "2026-12-01T00:00:00Z" });
+    await key(f).contents.schedule(id, { publishAt: "2026-12-01T00:00:00Z", unpublishAt: null, version: 3 });
     expect(f.calls[0].init.method).toBe("PUT");
     expect(f.calls[0].url).toBe(`${BASE}/api/contents/${id}/schedule`);
-    expect(JSON.parse(f.calls[0].init.body as string)).toEqual({ id, scheduledPublishAt: "2026-12-01T00:00:00Z" });
+    expect(JSON.parse(f.calls[0].init.body as string)).toEqual({
+      id,
+      scheduledPublishAt: "2026-12-01T00:00:00Z",
+      scheduledUnpublishAt: null,
+      version: 3,
+    });
   });
 
   it("rollback POSTs the version route", async () => {

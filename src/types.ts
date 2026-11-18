@@ -93,9 +93,9 @@ export interface ReadableField {
   name: string;
   type: string;
   isRequired: boolean;
-  validationRules?: unknown;
+  validationRules: Record<string, unknown>;
   options?: unknown;
-  multiple?: boolean;
+  multiple: boolean;
   itemType?: string | null;
   referenceType?: string | null;
   defaultValue?: unknown;

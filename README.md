@@ -91,9 +91,11 @@ await cms.contents.get(id);                            // includes `etag` when t
 await cms.contents.bySlug("post", "my-slug");          // authoring read by type and slug
 await cms.contents.create({ contentType, data, status?, sensitivity? }, { dryRun?, idempotencyKey? });
 await cms.contents.update(id, { data, status?, version? }, { ifMatch?, dryRun? });
+// ifMatch works for types that are not event-sourced; event-sourced types use `version`
 // dryRun answers { dryRun: true, changes: [{ field, from, to }] } and stores nothing
-await cms.contents.transition(id, "submit");           // named lifecycle transition
-await cms.contents.schedule(id, { publishAt?, unpublishAt? });
+await cms.contents.transition(id, "submit", data?);   // named lifecycle transition, data for its fields
+await cms.contents.schedule(id, { publishAt, unpublishAt, version? });
+// sets both times each call, null clears one; event-sourced types need `version`
 await cms.contents.rollback(id, versionId);
 await cms.contents.erase(id);                          // permanent, needs the erase capability
 await cms.contents.setStatus(id, ContentStatus.Published);

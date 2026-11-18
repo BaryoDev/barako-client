@@ -16,6 +16,8 @@ export interface WriteResult {
   id: string;
   version: number;
   message?: string;
+  /** Never true on a real write. Lets code narrow a create or update result. */
+  dryRun?: false;
 }
 
 /** What a rollback answers: the entry as it stands after the restore. */
@@ -23,10 +25,11 @@ export interface RollbackResult {
   id: string;
   contentType: string;
   data: Record<string, unknown>;
-  createdAt?: string;
-  updatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
   status: ContentStatus;
-  lastModifiedBy?: string;
+  lastModifiedBy: string;
+  sensitivity: number;
 }
 
 export interface ContentsResource {
@@ -36,21 +39,29 @@ export interface ContentsResource {
   /** One entry by type and slug, with its `etag`. */
   bySlug(type: string, slug: string): Promise<Content & { etag?: string }>;
   /** Create an entry. `dryRun` checks it and returns the changes without storing anything. */
-  create(
-    input: CreateContentInput,
-    opts?: { dryRun?: boolean; idempotencyKey?: string },
-  ): Promise<WriteResult | DryRunResult>;
+  create(input: CreateContentInput, opts: { dryRun: true; idempotencyKey?: string }): Promise<DryRunResult>;
+  create(input: CreateContentInput, opts?: { dryRun?: false; idempotencyKey?: string }): Promise<WriteResult>;
   /** Update an entry. Pass `version` for optimistic concurrency (rejected if it changed under you).
    *  `ifMatch` sends an ETag from get as If-Match. */
   update(
     id: string,
     input: UpdateContentInput & { version?: number },
-    opts?: { ifMatch?: string; dryRun?: boolean },
-  ): Promise<(WriteResult & { etag?: string }) | DryRunResult>;
-  /** Run a named lifecycle transition on a content type that declares one. */
-  transition(id: string, name: string): Promise<{ message?: string }>;
-  /** Set or clear the publish and unpublish times (ISO 8601, UTC). */
-  schedule(id: string, at: { publishAt?: string; unpublishAt?: string }): Promise<unknown>;
+    opts: { ifMatch?: string; dryRun: true },
+  ): Promise<DryRunResult>;
+  update(
+    id: string,
+    input: UpdateContentInput & { version?: number },
+    opts?: { ifMatch?: string; dryRun?: false },
+  ): Promise<WriteResult & { etag?: string }>;
+  /** Run a named lifecycle transition on a content type that declares one. `data` carries the
+   *  values for the fields that transition requires or allows. */
+  transition(id: string, name: string, data?: Record<string, unknown>): Promise<{ message?: string }>;
+  /** Set both times (ISO 8601, UTC). Every call replaces both, and null clears one, so state both.
+   *  Event-sourced types need `version`. */
+  schedule(
+    id: string,
+    at: { publishAt: string | null; unpublishAt: string | null; version?: number },
+  ): Promise<unknown>;
   /** Restore an earlier version, by the version id from history. */
   rollback(id: string, versionId: string): Promise<RollbackResult>;
   /** Remove an entry and its history for good. Needs the erase capability. */
@@ -91,23 +102,28 @@ export function contentsResource(transport: Transport): ContentsResource {
       return withEtag(body, headers);
     },
 
-    create: (input, opts) =>
+    create: ((input: CreateContentInput, opts?: { dryRun?: boolean; idempotencyKey?: string }) =>
       transport.request<WriteResult | DryRunResult>({
         method: "POST",
         path: "/api/contents",
         body: opts?.dryRun ? { ...input, dryRun: true } : input,
         headers: opts?.idempotencyKey ? { "Idempotency-Key": opts.idempotencyKey } : undefined,
-      }),
+      })) as ContentsResource["create"],
 
-    update: async (id, input, opts) => {
+    update: (async (
+      id: string,
+      input: UpdateContentInput & { version?: number },
+      opts?: { ifMatch?: string; dryRun?: boolean },
+    ) => {
       const { body, headers } = await transport.requestWithHeaders<WriteResult | DryRunResult>({
         method: "PUT",
         path: `/api/contents/${pathSegment(id)}`,
         body: opts?.dryRun ? { id, ...input, dryRun: true } : { id, ...input },
         headers: opts?.ifMatch ? { "If-Match": opts.ifMatch } : undefined,
       });
-      return "dryRun" in body && body.dryRun ? body : withEtag(body, headers);
-    },
+      // The server sets no ETag on a dry run, so the header is read for real writes only.
+      return withEtag(body, headers);
+    }) as ContentsResource["update"],
 
     setStatus: async (id, status) =>
       transport.request<{ message?: string }>({
@@ -116,18 +132,23 @@ export function contentsResource(transport: Transport): ContentsResource {
         body: { id, newStatus: status },
       }),
 
-    transition: async (id, name) =>
+    transition: async (id, name, data) =>
       transport.request<{ message?: string }>({
         method: "PUT",
         path: `/api/contents/${pathSegment(id)}/status`,
-        body: { id, transition: name },
+        body: data === undefined ? { id, transition: name } : { id, transition: name, data },
       }),
 
     schedule: async (id, at) =>
       transport.request<unknown>({
         method: "PUT",
         path: `/api/contents/${pathSegment(id)}/schedule`,
-        body: { id, scheduledPublishAt: at.publishAt, scheduledUnpublishAt: at.unpublishAt },
+        body: {
+          id,
+          scheduledPublishAt: at.publishAt,
+          scheduledUnpublishAt: at.unpublishAt,
+          ...(at.version === undefined ? {} : { version: at.version }),
+        },
       }),
 
     rollback: async (id, versionId) =>
