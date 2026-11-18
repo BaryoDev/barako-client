@@ -25,6 +25,8 @@ type does not declare, which surfaces as a `BarakoError`. A tenant that is not A
 on public delivery: `public.list` throws a `BarakoError`, and `public.bySlug` and `public.menu`
 return `null`.
 
+Looking for a command line tool? See [`cli/`](cli/README.md) for `@baryodev/barako`.
+
 ## Install
 
 ```bash

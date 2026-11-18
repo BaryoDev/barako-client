@@ -37,6 +37,7 @@
   "scripts": {
     "build": "tsup && npm run build -w cli",
     "test": "vitest run src && npm test -w cli",
+    "test:int": "npm run build && vitest run --config cli/vitest.int.config.ts",
     "typecheck": "tsc --noEmit && npm run typecheck -w cli",
     "prepublishOnly": "tsup"
   },

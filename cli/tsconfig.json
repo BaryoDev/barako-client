@@ -16,5 +16,5 @@
       "@baryodev/barako-client": ["../src/index.ts"]
     }
   },
-  "include": ["src"]
+  "include": ["src", "test"]
 }
