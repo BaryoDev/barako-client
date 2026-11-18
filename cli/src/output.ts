@@ -104,9 +104,9 @@ export interface Rendered {
 
 const REDACTED = "[redacted]";
 
-/** The key as it may appear raw, JSON-escaped or URL-encoded. */
+/** The key as it may appear raw or URL-encoded. JSON escaping happens after the scrub. */
 function forms(secret: string): string[] {
-  const all = [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)];
+  const all = [secret, encodeURIComponent(secret)];
   return [...new Set(all)].filter((f) => f.length > 0);
 }
 
@@ -123,13 +123,20 @@ function redact(text: string, secret: string): string {
 function scrub(value: unknown, secret: string, seen: WeakSet<object>): unknown {
   if (typeof value === "string") return redact(value, secret);
   if (value === null || typeof value !== "object") return value;
+  // `seen` holds the current ancestors only, so a shared reference is kept and a cycle is cut.
   if (seen.has(value)) return REDACTED;
   seen.add(value);
-  if (Array.isArray(value)) return value.map((v) => scrub(v, secret, seen));
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value)) {
-    out[redact(k, secret)] = scrub(v, secret, seen);
+  let out: unknown;
+  if (Array.isArray(value)) {
+    out = value.map((v) => scrub(v, secret, seen));
+  } else {
+    const o: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      o[redact(k, secret)] = scrub(v, secret, seen);
+    }
+    out = o;
   }
+  seen.delete(value);
   return out;
 }
 
@@ -146,9 +153,7 @@ export function render(outcome: Outcome, secret: string | undefined): Rendered {
         },
       };
   const safe = secret ? scrub(body, secret, new WeakSet()) : body;
-  let text = JSON.stringify(safe) ?? "null";
-  // Final guard over the serialized text.
-  if (secret) text = redact(text, secret);
+  const text = JSON.stringify(safe) ?? "null";
   return outcome.ok
     ? { stream: "stdout", text: text + "\n", exit: 0 }
     : { stream: "stderr", text: text + "\n", exit: exitFor(outcome.error.code) };

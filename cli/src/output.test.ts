@@ -68,6 +68,17 @@ describe("render", () => {
     expect(r.text).toContain("[redacted]");
   });
 
+  it("keeps the structure when the secret is a JSON word", () => {
+    const r = render({ ok: true, result: { a: 1 } }, "ok");
+    expect(JSON.parse(r.text)).toEqual({ ok: true, result: { a: 1 } });
+  });
+
+  it("keeps an object that appears twice in the result", () => {
+    const shared = { n: 1 };
+    const r = render({ ok: true, result: { x: shared, y: shared } }, "zzz");
+    expect(JSON.parse(r.text).result).toEqual({ x: { n: 1 }, y: { n: 1 } });
+  });
+
   it("scrubs a secret shorter than 8 characters", () => {
     const r = render({ ok: false, error: new CliError("usage", "bad abc") }, "abc");
     expect(r.text).not.toContain("abc");
