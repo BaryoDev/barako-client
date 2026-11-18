@@ -41,6 +41,7 @@ export interface ContentsResource {
   /** Create an entry. `dryRun` checks it and returns the changes without storing anything. */
   create(input: CreateContentInput, opts: { dryRun: true; idempotencyKey?: string }): Promise<DryRunResult>;
   create(input: CreateContentInput, opts?: { dryRun?: false; idempotencyKey?: string }): Promise<WriteResult>;
+  create(input: CreateContentInput, opts?: { dryRun?: boolean; idempotencyKey?: string }): Promise<WriteResult | DryRunResult>;
   /** Update an entry. Pass `version` for optimistic concurrency (rejected if it changed under you).
    *  `ifMatch` sends an ETag from get as If-Match. */
   update(
@@ -53,6 +54,11 @@ export interface ContentsResource {
     input: UpdateContentInput & { version?: number },
     opts?: { ifMatch?: string; dryRun?: false },
   ): Promise<WriteResult & { etag?: string }>;
+  update(
+    id: string,
+    input: UpdateContentInput & { version?: number },
+    opts?: { ifMatch?: string; dryRun?: boolean },
+  ): Promise<(WriteResult & { etag?: string }) | DryRunResult>;
   /** Run a named lifecycle transition on a content type that declares one. `data` carries the
    *  values for the fields that transition requires or allows. */
   transition(id: string, name: string, data?: Record<string, unknown>): Promise<{ message?: string }>;
