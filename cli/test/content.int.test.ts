@@ -105,7 +105,7 @@ describe.skipIf(!BASE)("barako against a live server", () => {
     await waitReady();
     const admin = await login(ADMIN_USER, ADMIN_PASSWORD);
 
-    await call("POST", "/api/content-types/blueprints/blog", undefined, admin);
+    await call("POST", "/api/content-types/blueprints/blog", {}, admin);
 
     const rule = { enabled: true };
     const role = await call(
