@@ -18,7 +18,7 @@ await cms.contentTypes.create({
   displayName: "SDK Demo",
   fields: [{ name: "Title", displayName: "Title", type: "string", isRequired: true }],
 });
-const created = await cms.contents.create({ contentType: typeName, data: { Title: "Hello from the SDK" }, status: 1 });
+const created = await cms.contents.create({ contentType: typeName, data: { Title: "Hello from the SDK" }, status: "Published" });
 console.log("created entry:", created.id, "v" + created.version);
 
 // Typed error handling
