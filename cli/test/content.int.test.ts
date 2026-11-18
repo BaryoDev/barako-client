@@ -39,19 +39,26 @@ async function call(method: string, path: string, body?: unknown, token?: string
   return text ? JSON.parse(text) : undefined;
 }
 
-/** The first-run seeder works in the background, so sign-in can fail for a while after boot. */
-async function login(username: string, password: string, patient: boolean): Promise<string> {
-  const deadline = Date.now() + (patient ? 150_000 : 0);
+/** Sign-in answers 401 until the first-run seeder is done, and the auth limiter counts 401s
+ *  (5 per 15 minutes), so wait on the readiness probe and sign in once. */
+async function waitReady(): Promise<void> {
+  const deadline = Date.now() + 150_000;
   for (;;) {
     try {
-      const res = await call("POST", "/api/auth/login", { username, password });
-      if (res?.token) return res.token as string;
-      throw new Error("sign-in gave no token");
-    } catch (err) {
-      if (Date.now() >= deadline) throw err;
-      await new Promise((r) => setTimeout(r, 3000));
+      const res = await fetch(`${BASE}/health/ready`);
+      if (res.ok) return;
+    } catch {
+      // The server is not listening yet.
     }
+    if (Date.now() >= deadline) throw new Error("The server did not become ready in 150s.");
+    await new Promise((r) => setTimeout(r, 3000));
   }
+}
+
+async function login(username: string, password: string): Promise<string> {
+  const res = await call("POST", "/api/auth/login", { username, password });
+  if (!res?.token) throw new Error("sign-in gave no token");
+  return res.token as string;
 }
 
 function barako(args: string[]): Promise<Run> {
@@ -95,7 +102,8 @@ describe.skipIf(!BASE)("barako against a live server", () => {
     const userName = `cli_writer_${suffix}`;
     const userPassword = `Writer-${suffix}-Pass1!`;
 
-    const admin = await login(ADMIN_USER, ADMIN_PASSWORD, true);
+    await waitReady();
+    const admin = await login(ADMIN_USER, ADMIN_PASSWORD);
 
     await call("POST", "/api/content-types/blueprints/blog", undefined, admin);
 
@@ -130,7 +138,7 @@ describe.skipIf(!BASE)("barako against a live server", () => {
     await call("POST", `/api/users/${user.id}/roles`, { roleId: role.id }, admin);
 
     // The key acts as whoever creates it, so the new user creates it.
-    const userToken = await login(userName, userPassword, false);
+    const userToken = await login(userName, userPassword);
     const key = await call(
       "POST",
       "/api/api-keys",
