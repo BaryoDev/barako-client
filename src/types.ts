@@ -71,6 +71,52 @@ export interface TenantSummary {
   branding?: Record<string, string>;
 }
 
+/** One field a write would change. Names match the server's FieldDiff. */
+export interface FieldDiff {
+  field: string;
+  /** What it holds now, or null when it is new. */
+  from?: unknown;
+  /** What it would hold, or null when the write leaves it out. */
+  to?: unknown;
+}
+
+/** The answer to a dry-run create or update: nothing was stored. */
+export interface DryRunResult {
+  dryRun: true;
+  changes: FieldDiff[];
+  id?: string;
+  version?: number;
+}
+
+/** A field as a content reader sees it (GET /api/contents/types/{name}). */
+export interface ReadableField {
+  name: string;
+  type: string;
+  isRequired: boolean;
+  validationRules: Record<string, unknown>;
+  options?: unknown;
+  multiple: boolean;
+  itemType?: string | null;
+  referenceType?: string | null;
+  defaultValue?: unknown;
+  jsonSchema?: unknown;
+  currency?: string | null;
+  scale?: number | null;
+  computed?: unknown;
+  /** Where the block schema of a blocks field is served. */
+  blockSchema?: string | null;
+}
+
+export interface ReadableContentType {
+  name: string;
+  displayName: string;
+  description: string;
+  isSingleton: boolean;
+  fields: ReadableField[];
+  lifecycle?: unknown;
+  uniqueness?: unknown;
+}
+
 export interface CreateContentInput {
   contentType: string;
   data: Record<string, unknown>;
@@ -88,6 +134,8 @@ export interface ListContentQuery {
   page?: number;
   pageSize?: number;
   status?: ContentStatus;
+  /** Text search across entry values. */
+  search?: string;
 }
 
 export interface ContentVersion {

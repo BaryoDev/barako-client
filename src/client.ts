@@ -10,6 +10,8 @@ import { authResource, type AuthResource } from "./resources/auth";
 import { meResource, type MeResource } from "./resources/me";
 import { contentsResource, type ContentsResource } from "./resources/contents";
 import { contentTypesResource, type ContentTypesResource } from "./resources/content-types";
+import { blocksResource, type BlocksResource } from "./resources/blocks";
+import { pagesResource, type PagesResource } from "./resources/pages";
 import { publicResource, type PublicResource } from "./resources/public";
 
 export interface ClientConfig {
@@ -33,6 +35,8 @@ export interface BarakoClient {
   me: MeResource;
   contents: ContentsResource;
   contentTypes: ContentTypesResource;
+  blocks: BlocksResource;
+  pages: PagesResource;
   /** Anonymous public delivery for a website frontend (no auth needed). */
   public: PublicResource;
 }
@@ -71,6 +75,8 @@ export function createClient(config: ClientConfig): BarakoClient {
     me: meResource(transport, store),
     contents: contentsResource(transport),
     contentTypes: contentTypesResource(transport),
+    blocks: blocksResource(transport),
+    pages: pagesResource(transport),
     public: publicResource(transport, config.baseUrl),
   };
 }
