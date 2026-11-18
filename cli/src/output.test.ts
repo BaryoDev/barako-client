@@ -14,8 +14,19 @@ describe("codeForStatus", () => {
     [403, "forbidden"],
     [500, "server"],
     [503, "server"],
+    [429, "server"],
   ])("maps %i to %s", (status, code) => {
     expect(codeForStatus(status)).toBe(code);
+  });
+});
+
+describe("rate limiting", () => {
+  it("maps a 429 to server with a retry message", () => {
+    const e = toCliError(new BarakoError(429, "Too many requests"));
+    expect(e.code).toBe("server");
+    expect(exitFor(e.code)).toBe(6);
+    expect(e.message).toContain("rate limiting");
+    expect(e.message).toContain("Retry later");
   });
 });
 

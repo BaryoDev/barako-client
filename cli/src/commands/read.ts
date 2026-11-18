@@ -76,11 +76,11 @@ const listCommand: Command = {
       const got = res?.items ?? [];
       items.push(...got);
       if (items.length >= ALL_CAP) {
-        truncated = items.length > ALL_CAP || res.hasNextPage === true;
+        truncated = items.length > ALL_CAP || res?.hasNextPage === true;
         items.length = Math.min(items.length, ALL_CAP);
         break;
       }
-      if (!res.hasNextPage || got.length === 0) break;
+      if (!res?.hasNextPage || got.length === 0) break;
     }
     return { items, truncated };
   },

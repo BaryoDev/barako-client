@@ -125,6 +125,11 @@ const scheduleCommand: Command = {
     const id = args.id as string;
     const current = await client.contents.get(id);
     const v = (current as { version?: unknown }).version;
+    // Version 0 means none sent to the server (Schedule/Endpoint.cs:87), so it is only safe to
+    // send nothing when the entry has an ETag to show it is a normal entry with no event stream.
+    if (!(typeof v === "number" && v > 0) && !(current as { etag?: unknown }).etag) {
+      throw new CliError("version_required", "The server returned neither a version nor an ETag for this entry, so the schedule was not sent.");
+    }
     const at: { publishAt: string | null; unpublishAt: string | null; version?: number } = { publishAt, unpublishAt };
     if (typeof v === "number" && v > 0) at.version = v;
     return client.contents.schedule(id, at);

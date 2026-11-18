@@ -43,6 +43,8 @@ export function codeForStatus(status: number): ErrorCode {
       return "rule";
     case 428:
       return "version_required";
+    case 429:
+      return "server";
     default:
       return status >= 500 ? "server" : "validation";
   }
@@ -72,7 +74,8 @@ export function exitFor(code: ErrorCode): number {
 export function toCliError(err: unknown): CliError {
   if (err instanceof CliError) return err;
   if (err instanceof BarakoError) {
-    return new CliError(codeForStatus(err.status), err.message, {
+    const message = err.status === 429 ? "The server is rate limiting this key. Retry later." : err.message;
+    return new CliError(codeForStatus(err.status), message, {
       status: err.status,
       details: err.body,
     });

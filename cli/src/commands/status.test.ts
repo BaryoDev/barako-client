@@ -72,6 +72,21 @@ describe("status commands", () => {
     expect(schedule).toHaveBeenCalledWith("a", { publishAt: "2026-12-01T09:00:00Z", unpublishAt: null, version: 3 });
   });
 
+  it("schedule sends no version for version 0 when the entry has an etag", async () => {
+    const get = vi.fn().mockResolvedValue({ version: 0, etag: '"e1"' });
+    const schedule = vi.fn().mockResolvedValue({});
+    await exec("content schedule", { get, schedule }, { id: "a", "publish-at": "2026-12-01T09:00:00Z" });
+    expect(schedule).toHaveBeenCalledWith("a", { publishAt: "2026-12-01T09:00:00Z", unpublishAt: null });
+  });
+
+  it("schedule refuses with version_required when there is no version and no etag", async () => {
+    const get = vi.fn().mockResolvedValue({ version: 0 });
+    const schedule = vi.fn();
+    const e = await fails(() => exec("content schedule", { get, schedule }, { id: "a", "publish-at": "2026-12-01T09:00:00Z" }));
+    expect(e.code).toBe("version_required");
+    expect(schedule).not.toHaveBeenCalled();
+  });
+
   it("passes a 400 that does not mention a lifecycle through as validation", async () => {
     const setStatus = vi.fn().mockRejectedValue(new BarakoError(400, "Invalid status value"));
     const e = await fails(() => exec("content publish", { setStatus }, { id: "a" }));

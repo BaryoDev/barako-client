@@ -82,12 +82,19 @@ const updateCommand: Command = {
     if (!any) throw new CliError("usage", "Nothing to change. Give --set, --set-file or --file.");
 
     const current = await client.contents.get(id);
-    const version = currentVersionOf(current);
-    if (version === undefined || version < 1) {
-      throw new CliError("server", "The server returned no usable version for this entry, so the update was not sent.");
+    const reported = currentVersionOf(current);
+    const hasVersion = reported !== undefined && reported >= 1;
+    // Version 0 is normal for an entry with no event stream. The server treats it as "none sent"
+    // (Update/Endpoint.cs:259) and checks If-Match instead (Update/Endpoint.cs:204-221).
+    if (!hasVersion && !current.etag) {
+      throw new CliError(
+        "version_required",
+        "The server returned neither a version nor an ETag for this entry, so the update was not sent.",
+      );
     }
+    const version = hasVersion ? reported : 0;
     const expected = args["expect-version"];
-    if (typeof expected === "number" && expected !== version) {
+    if (typeof expected === "number" && hasVersion && expected !== version) {
       throw new CliError("conflict", `The entry is at version ${version}, not the expected version.`, {
         details: { currentVersion: version },
       });
@@ -102,7 +109,7 @@ const updateCommand: Command = {
       return await client.contents.update(id, { data, version }, opts);
     } catch (err) {
       const status = (err as { status?: unknown } | null)?.status;
-      if (status === 409 || status === 412) {
+      if (status === 409 || status === 412 || status === 428) {
         let latest: number | undefined;
         try {
           latest = currentVersionOf(await client.contents.get(id));

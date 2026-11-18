@@ -4,7 +4,7 @@
 
 - Success: stdout, `{"ok":true,"result":...}`, exit 0.
 - Failure: stderr, `{"ok":false,"error":{"code","status","message","details"}}`, exit 1 to 6.
-- Exit codes: 1 usage, 2 validation or rule, 3 conflict, 4 not found, 5 not allowed, 6 server or network.
+- Exit codes: 1 usage, 2 validation or rule, 3 conflict, 4 not found, 5 not allowed, 6 server, network or rate limiting (429).
 
 Set `BARAKO_URL` and `BARAKO_API_KEY` in the environment. Never put the key in an argument, a file you
 commit or your output. Use `--key-file` if you must pass a file.
@@ -32,6 +32,6 @@ Do these in order.
   `content:destructive` and `--confirm <id>`. Only run it when a person asked for exactly that.
 - Exit 5 means the key lacks a scope or permission. Stop and report it. Do not look for another key.
 - Exit 2 means the data is wrong. Read `error.message` and `error.details`, fix the fields, retry.
-- Do not retry exit 3 or exit 6 in a loop. Read the entry again first.
-- A content type with its own lifecycle may refuse publish and archive. Use
+- Do not retry exit 3 or exit 6 in a loop. Exit 6 on a rate limit (429) means wait, then retry later. Read the entry again first.
+- A content type with its own lifecycle may refuse publish, unpublish, archive and restore. Use
   `barako content transition <id> <name>` there.

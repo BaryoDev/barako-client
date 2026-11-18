@@ -85,7 +85,7 @@ With `-o text` the output is indented JSON on success and one `error (code): mes
 | 3 | conflict: 409, 412, or 428 when a version is required |
 | 4 | not found |
 | 5 | not allowed: 401 or 403 |
-| 6 | server or network error |
+| 6 | server or network error, or rate limiting (429) |
 
 ## Integration tests
 

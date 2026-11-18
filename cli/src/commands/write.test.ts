@@ -64,11 +64,18 @@ describe("content update", () => {
     expect(update).toHaveBeenCalledWith("i1", { data: { Title: "y", Body: "b" }, version: 5 }, { ifMatch: '"e5"' });
   });
 
-  it("never sends version 0", async () => {
+  it("sends version 0 with ifMatch for an entry with no event stream", async () => {
     const get = vi.fn().mockResolvedValue(entry({ version: 0 }));
+    const update = vi.fn().mockResolvedValue({});
+    await exec("content update", { get, update }, { id: "i1", set: ["Title=y"] });
+    expect(update).toHaveBeenCalledWith("i1", { data: { Title: "y", Body: "b" }, version: 0 }, { ifMatch: '"e5"' });
+  });
+
+  it("refuses with version_required when there is no version and no etag", async () => {
+    const get = vi.fn().mockResolvedValue(entry({ version: 0, etag: undefined }));
     const update = vi.fn();
     const e = await fails(() => exec("content update", { get, update }, { id: "i1", set: ["Title=y"] }));
-    expect(e.code).toBe("server");
+    expect(e.code).toBe("version_required");
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -112,6 +119,15 @@ describe("content update", () => {
     const update = vi.fn().mockRejectedValue(new BarakoError(428, "needs version"));
     const e = await fails(() => exec("content update", { get, update }, { id: "i1", set: ["Title=y"] }));
     expect(e.code).toBe("version_required");
+  });
+
+  it("reads the current version after a 428", async () => {
+    const get = vi.fn().mockResolvedValueOnce(entry()).mockResolvedValueOnce(entry({ version: 8 }));
+    const update = vi.fn().mockRejectedValue(new BarakoError(428, "needs version"));
+    const e = await fails(() => exec("content update", { get, update }, { id: "i1", set: ["Title=y"] }));
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(e.code).toBe("version_required");
+    expect(e.details.currentVersion).toBe(8);
   });
 
   it("sends the file as data with --replace and no merge", async () => {
