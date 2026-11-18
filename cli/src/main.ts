@@ -5,6 +5,8 @@ import { connect, type Env } from "./connect";
 import { CliError, render, scrubText, toCliError, type Outcome } from "./output";
 import { commands, type ArgSpec, type Command } from "./registry";
 import "./commands/read";
+import "./commands/status";
+import "./commands/write";
 
 export interface Io {
   readFile(path: string): string;
