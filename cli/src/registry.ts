@@ -17,6 +17,8 @@ export interface Command {
   name: string;
   summary: string;
   args: ArgSpec[];
+  /** True when the command needs no API connection (no URL or key). */
+  offline?: boolean;
   run(ctx: RunContext, args: Record<string, unknown>): Promise<unknown>;
 }
 

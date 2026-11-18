@@ -44,4 +44,21 @@ describe("run", () => {
     expect(code).toBe(1);
     expect(JSON.parse(h.out[0]!.text).error.code).toBe("usage");
   });
+
+  it("runs commands with an empty env and exits 0", async () => {
+    const h = harness();
+    expect(await run(["commands"], {}, h.io)).toBe(0);
+  });
+
+  it("never prints the key when it is passed as an unknown flag", async () => {
+    const h = harness();
+    const key = "bcms_leakme123";
+    const code = await run(["commands", "--apiKey", key], { BARAKO_API_KEY: key }, h.io);
+    expect(code).toBe(1);
+    const all = h.out.map((o) => o.text).join("");
+    expect(all).not.toContain(key);
+    const h2 = harness();
+    await run(["commands", `--apiKey=${key}`, key], { BARAKO_API_KEY: key }, h2.io);
+    expect(h2.out.map((o) => o.text).join("")).not.toContain(key);
+  });
 });

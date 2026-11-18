@@ -57,6 +57,17 @@ describe("render", () => {
     expect(JSON.parse(r.text).error.code).toBe("server");
   });
 
+  it("scrubs the URL-encoded and JSON-escaped forms of the key", () => {
+    const secret = 'a b/"c';
+    const err = new CliError("server", "x", {
+      details: { url: `http://h/?k=${encodeURIComponent(secret)}`, raw: JSON.stringify(secret) },
+    });
+    const r = render({ ok: false, error: err }, secret);
+    expect(r.text).not.toContain(encodeURIComponent(secret));
+    expect(r.text).not.toContain(JSON.stringify(secret).slice(1, -1));
+    expect(r.text).toContain("[redacted]");
+  });
+
   it("scrubs a secret shorter than 8 characters", () => {
     const r = render({ ok: false, error: new CliError("usage", "bad abc") }, "abc");
     expect(r.text).not.toContain("abc");
@@ -75,6 +86,18 @@ describe("toCliError", () => {
     expect(e.code).toBe("not_found");
     expect(e.status).toBe(404);
     expect(e.details).toEqual({ x: 1 });
+  });
+
+  it("maps a path segment TypeError to usage, exit 1", () => {
+    const e = toCliError(new TypeError('Invalid path segment: ".."'));
+    expect(e.code).toBe("usage");
+    expect(exitFor(e.code)).toBe(1);
+  });
+
+  it("maps an abort to network", () => {
+    const e = new Error("aborted");
+    e.name = "AbortError";
+    expect(toCliError(e).code).toBe("network");
   });
 
   it("passes a CliError through", () => {

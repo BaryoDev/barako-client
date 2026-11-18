@@ -1,7 +1,8 @@
 import { parseArgs } from "node:util";
+import type { BarakoClient } from "@baryodev/barako-client";
 import { readFileSync } from "node:fs";
 import { connect, type Env } from "./connect";
-import { CliError, render, toCliError, type Outcome } from "./output";
+import { CliError, render, scrubText, toCliError, type Outcome } from "./output";
 import { commands, type ArgSpec, type Command } from "./registry";
 
 export interface Io {
@@ -15,6 +16,7 @@ const commandsCommand: Command = {
   name: "commands",
   summary: "List every command with its arguments.",
   args: [],
+  offline: true,
   async run() {
     return commands.map((c) => ({ name: c.name, summary: c.summary, args: c.args }));
   },
@@ -53,12 +55,18 @@ function parseCommandArgs(command: Command, rest: string[]): Record<string, unkn
       strict: true,
     });
   } catch (err) {
-    throw new CliError("usage", (err as Error).message);
+    // Name the flag only. The message can carry argv values, which may be a key.
+    const flag = /'(--?[^'=\s<]+)/.exec((err as Error).message)?.[1];
+    const code = (err as { code?: string }).code;
+    if (code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
+      throw new CliError("usage", `Unknown option ${flag ?? ""}`.trim() + ".");
+    }
+    throw new CliError("usage", flag ? `Invalid use of option ${flag}.` : "Invalid arguments.");
   }
   const out: Record<string, unknown> = {};
   const positionals = command.args.filter((a) => a.kind === "positional");
   if (parsed.positionals.length > positionals.length) {
-    throw new CliError("usage", `Unexpected argument: ${parsed.positionals[positionals.length]}`);
+    throw new CliError("usage", "Unexpected positional argument.");
   }
   positionals.forEach((spec, i) => {
     const v = parsed.positionals[i];
@@ -98,8 +106,27 @@ function toText(outcome: Outcome): string {
   return (typeof r === "string" ? r : JSON.stringify(r, null, 2)) + "\n";
 }
 
+/** Find the key (key file first, then env) before anything else runs, so every
+ *  output path can scrub it. Failures here are reported later by connect(). */
+function earlySecret(argv: string[], env: Env, io: Io): string | undefined {
+  let keyFile: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const t = argv[i]!;
+    if (t === "--key-file") keyFile = argv[i + 1];
+    else if (t.startsWith("--key-file=")) keyFile = t.slice("--key-file=".length);
+  }
+  if (keyFile) {
+    try {
+      return io.readFile(keyFile).replace(/[\r\n]+$/, "").trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return env.BARAKO_API_KEY?.trim() || undefined;
+}
+
 export async function run(argv: string[], env: Env, io: Io): Promise<number> {
-  let secret: string | undefined;
+  const secret = earlySecret(argv, env, io);
   let outcome: Outcome;
   let format = "json";
   try {
@@ -123,20 +150,22 @@ export async function run(argv: string[], env: Env, io: Io): Promise<number> {
       throw new CliError("usage", `Unknown output format "${output}". Use json or text.`);
     }
     format = output ?? "json";
-    const conn = connect(
-      env,
-      { url: args.__url as string | undefined, keyFile: args.__keyFile as string | undefined },
-      io.readFile,
-    );
-    secret = conn.secret;
-    const result = await found.command.run({ client: conn.client, readFile: io.readFile }, args);
+    let client: BarakoClient = undefined as never;
+    if (!found.command.offline) {
+      client = connect(
+        env,
+        { url: args.__url as string | undefined, keyFile: args.__keyFile as string | undefined },
+        io.readFile,
+      ).client;
+    }
+    const result = await found.command.run({ client, readFile: io.readFile }, args);
     outcome = { ok: true, result };
   } catch (err) {
     outcome = { ok: false, error: toCliError(err) };
   }
   const rendered = render(outcome, secret);
   if (format === "text") {
-    const text = secret ? toText(outcome).split(secret).join("[redacted]") : toText(outcome);
+    const text = secret ? scrubText(toText(outcome), secret) : toText(outcome);
     io.write(rendered.stream, text);
   } else {
     io.write(rendered.stream, rendered.text);

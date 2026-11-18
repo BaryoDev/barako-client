@@ -77,8 +77,18 @@ export function toCliError(err: unknown): CliError {
       details: err.body,
     });
   }
-  if (err instanceof TypeError) {
-    return new CliError("network", err.message);
+  if (err instanceof Error) {
+    if (err.name === "AbortError" || err.name === "TimeoutError") {
+      return new CliError("network", err.message);
+    }
+    if (err instanceof TypeError) {
+      if (err.message.startsWith("Invalid path segment")) {
+        return new CliError("usage", err.message);
+      }
+      if (err.message === "fetch failed" || (err as { cause?: unknown }).cause !== undefined) {
+        return new CliError("network", err.message);
+      }
+    }
   }
   const message = err instanceof Error ? err.message : String(err);
   return new CliError("server", message);
@@ -94,15 +104,31 @@ export interface Rendered {
 
 const REDACTED = "[redacted]";
 
+/** The key as it may appear raw, JSON-escaped or URL-encoded. */
+function forms(secret: string): string[] {
+  const all = [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)];
+  return [...new Set(all)].filter((f) => f.length > 0);
+}
+
+export function scrubText(text: string, secret: string): string {
+  return redact(text, secret);
+}
+
+function redact(text: string, secret: string): string {
+  let out = text;
+  for (const f of forms(secret)) out = out.split(f).join(REDACTED);
+  return out;
+}
+
 function scrub(value: unknown, secret: string, seen: WeakSet<object>): unknown {
-  if (typeof value === "string") return value.split(secret).join(REDACTED);
+  if (typeof value === "string") return redact(value, secret);
   if (value === null || typeof value !== "object") return value;
   if (seen.has(value)) return REDACTED;
   seen.add(value);
   if (Array.isArray(value)) return value.map((v) => scrub(v, secret, seen));
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value)) {
-    out[k.split(secret).join(REDACTED)] = scrub(v, secret, seen);
+    out[redact(k, secret)] = scrub(v, secret, seen);
   }
   return out;
 }
@@ -121,8 +147,8 @@ export function render(outcome: Outcome, secret: string | undefined): Rendered {
       };
   const safe = secret ? scrub(body, secret, new WeakSet()) : body;
   let text = JSON.stringify(safe) ?? "null";
-  // Final guard in case the secret survives in an escaped form.
-  if (secret) text = text.split(secret).join(REDACTED);
+  // Final guard over the serialized text.
+  if (secret) text = redact(text, secret);
   return outcome.ok
     ? { stream: "stdout", text: text + "\n", exit: 0 }
     : { stream: "stderr", text: text + "\n", exit: exitFor(outcome.error.code) };
