@@ -99,6 +99,7 @@ await cms.contents.schedule(id, { publishAt, unpublishAt, version? });
 await cms.contents.rollback(id, versionId);
 await cms.contents.erase(id);                          // permanent, needs the erase capability
 await cms.contents.setStatus(id, ContentStatus.Published);
+// ContentStatus, SensitivityLevel and FieldMask are string enums holding the names the API sends ("Published").
 await cms.contents.history(id);
 
 // blocks and pages
