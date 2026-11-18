@@ -35,15 +35,16 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "build": "tsup && npm run build -w cli",
+    "test": "vitest run src && npm test -w cli",
+    "typecheck": "tsc --noEmit && npm run typecheck -w cli",
+    "prepublishOnly": "tsup"
   },
   "devDependencies": {
     "tsup": "^8.3.0",
     "typescript": "^5.6.0",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "@types/node": "^22.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -53,5 +54,8 @@
   },
   "overrides": {
     "esbuild": "^0.28.2"
-  }
+  },
+  "workspaces": [
+    "cli"
+  ]
 }

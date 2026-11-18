@@ -1,0 +1,158 @@
+import { parseArgs } from "node:util";
+import { readFileSync } from "node:fs";
+import { connect, type Env } from "./connect";
+import { CliError, render, toCliError, type Outcome } from "./output";
+import { commands, type ArgSpec, type Command } from "./registry";
+
+export interface Io {
+  readFile(path: string): string;
+  write(stream: "stdout" | "stderr", text: string): void;
+}
+
+const SECRET_FLAGS = ["--api-key", "--apikey", "--key", "--token", "--secret"];
+
+const commandsCommand: Command = {
+  name: "commands",
+  summary: "List every command with its arguments.",
+  args: [],
+  async run() {
+    return commands.map((c) => ({ name: c.name, summary: c.summary, args: c.args }));
+  },
+};
+
+function findCommand(argv: string[]): { command: Command; rest: string[] } | undefined {
+  let best: { command: Command; rest: string[]; len: number } | undefined;
+  for (const command of [commandsCommand, ...commands]) {
+    const parts = command.name.split(" ");
+    if (parts.every((p, i) => argv[i] === p) && (!best || parts.length > best.len)) {
+      best = { command, rest: argv.slice(parts.length), len: parts.length };
+    }
+  }
+  return best;
+}
+
+function parseCommandArgs(command: Command, rest: string[]): Record<string, unknown> {
+  const options: Record<string, { type: "string" | "boolean"; multiple?: boolean; short?: string }> = {
+    url: { type: "string" },
+    "key-file": { type: "string" },
+    output: { type: "string", short: "o" },
+  };
+  for (const a of command.args) {
+    if (a.kind !== "flag") continue;
+    options[a.name] = {
+      type: a.type === "boolean" ? "boolean" : "string",
+      ...(a.type === "string[]" ? { multiple: true } : {}),
+    };
+  }
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: rest,
+      options,
+      allowPositionals: true,
+      strict: true,
+    });
+  } catch (err) {
+    throw new CliError("usage", (err as Error).message);
+  }
+  const out: Record<string, unknown> = {};
+  const positionals = command.args.filter((a) => a.kind === "positional");
+  if (parsed.positionals.length > positionals.length) {
+    throw new CliError("usage", `Unexpected argument: ${parsed.positionals[positionals.length]}`);
+  }
+  positionals.forEach((spec, i) => {
+    const v = parsed.positionals[i];
+    if (v !== undefined) out[spec.name] = coerce(spec, v);
+  });
+  for (const spec of command.args) {
+    if (spec.kind !== "flag") continue;
+    const v = parsed.values[spec.name];
+    if (v === undefined) continue;
+    out[spec.name] = Array.isArray(v) ? v.map((x) => coerce(spec, x)) : coerce(spec, v);
+  }
+  for (const spec of command.args) {
+    if (spec.required && out[spec.name] === undefined) {
+      throw new CliError("usage", `Missing ${spec.kind} "${spec.name}".`);
+    }
+  }
+  out.__url = parsed.values.url;
+  out.__keyFile = parsed.values["key-file"];
+  out.__output = parsed.values.output;
+  return out;
+}
+
+function coerce(spec: ArgSpec, v: string | boolean): unknown {
+  if (spec.type === "number") {
+    const n = Number(v);
+    if (typeof v !== "string" || v.trim() === "" || Number.isNaN(n)) {
+      throw new CliError("usage", `"${spec.name}" must be a number.`);
+    }
+    return n;
+  }
+  return v;
+}
+
+function toText(outcome: Outcome): string {
+  if (!outcome.ok) return `error (${outcome.error.code}): ${outcome.error.message}\n`;
+  const r = outcome.result;
+  return (typeof r === "string" ? r : JSON.stringify(r, null, 2)) + "\n";
+}
+
+export async function run(argv: string[], env: Env, io: Io): Promise<number> {
+  let secret: string | undefined;
+  let outcome: Outcome;
+  let format = "json";
+  try {
+    const flagged = argv.find((t) => SECRET_FLAGS.some((f) => t === f || t.startsWith(f + "=")));
+    if (flagged) {
+      throw new CliError(
+        "usage",
+        "Do not pass the API key on the command line. Set BARAKO_API_KEY or use --key-file.",
+      );
+    }
+    const found = findCommand(argv);
+    if (!found) {
+      throw new CliError(
+        "usage",
+        `Unknown command${argv[0] ? ` "${argv[0]}"` : ""}. Run "commands" to list them.`,
+      );
+    }
+    const args = parseCommandArgs(found.command, found.rest);
+    const output = args.__output as string | undefined;
+    if (output !== undefined && output !== "json" && output !== "text") {
+      throw new CliError("usage", `Unknown output format "${output}". Use json or text.`);
+    }
+    format = output ?? "json";
+    const conn = connect(
+      env,
+      { url: args.__url as string | undefined, keyFile: args.__keyFile as string | undefined },
+      io.readFile,
+    );
+    secret = conn.secret;
+    const result = await found.command.run({ client: conn.client, readFile: io.readFile }, args);
+    outcome = { ok: true, result };
+  } catch (err) {
+    outcome = { ok: false, error: toCliError(err) };
+  }
+  const rendered = render(outcome, secret);
+  if (format === "text") {
+    const text = secret ? toText(outcome).split(secret).join("[redacted]") : toText(outcome);
+    io.write(rendered.stream, text);
+  } else {
+    io.write(rendered.stream, rendered.text);
+  }
+  return rendered.exit;
+}
+
+// Run only when executed as the CLI, not when imported by tests.
+const entry = process.argv[1] ?? "";
+if (/(^|[\\/])(main\.js|barako)$/.test(entry)) {
+  run(process.argv.slice(2), process.env as Env, {
+    readFile: (p) => readFileSync(p, "utf8"),
+    write: (stream, text) => {
+      (stream === "stdout" ? process.stdout : process.stderr).write(text);
+    },
+  }).then((code) => {
+    process.exitCode = code;
+  });
+}
