@@ -12,7 +12,7 @@
   },
   "type": "module",
   "bin": {
-    "barako": "./dist/main.js"
+    "barako": "dist/main.js"
   },
   "files": [
     "dist"
