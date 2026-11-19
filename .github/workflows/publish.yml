@@ -100,7 +100,7 @@ jobs:
 
   announce:
     needs: publish
-    if: needs.publish.outputs.client == 'true'
+    if: ${{ !cancelled() && needs.publish.outputs.client == 'true' }}
     uses: BaryoDev/.github/.github/workflows/announce.yml@7d9cbb97e4a8fea9d5244ab6de9b06cb2eab8229 # main
     with:
       package: "@baryodev/barako-client"
@@ -113,7 +113,7 @@ jobs:
 
   announce-cli:
     needs: publish
-    if: needs.publish.outputs.cli == 'true'
+    if: ${{ !cancelled() && needs.publish.outputs.cli == 'true' }}
     uses: BaryoDev/.github/.github/workflows/announce.yml@7d9cbb97e4a8fea9d5244ab6de9b06cb2eab8229 # main
     with:
       package: "@baryodev/barako"
