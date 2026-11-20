@@ -173,22 +173,44 @@ describe("timeouts", () => {
     await expect(b).rejects.toMatchObject({ code: "aborted" });
   });
 
-  it("a per-call timeoutMs reaches the other resources", async () => {
+  it("a per-call timeoutMs reaches every method of every other resource", async () => {
+    const t = { timeoutMs: 20 };
     const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: hangingFetch(), timeouts: { readMs: 0 } });
     const calls = [
-      cms.contents.get("a", { timeoutMs: 20 }),
-      cms.contents.history("a", { timeoutMs: 20 }),
-      cms.contentTypes.list({ timeoutMs: 20 }),
-      cms.contentTypes.readable({ timeoutMs: 20 }),
-      cms.blocks.schema({ timeoutMs: 20 }),
-      cms.pages.tree({ timeoutMs: 20 }),
-      cms.me.tenants({ timeoutMs: 20 }),
-      cms.contents.setStatus("a", ContentStatus.Published, { timeoutMs: 20 }),
-      cms.contents.erase("a", { timeoutMs: 20 }),
-      cms.me.switch("t", { timeoutMs: 20 }),
-      cms.auth.login("u", "p", undefined, { timeoutMs: 20 }),
+      cms.contents.list(undefined, t),
+      cms.contents.get("a", t),
+      cms.contents.bySlug("post", "a", t),
+      cms.contents.create({ contentType: "post", data: {} }, t),
+      cms.contents.update("a", { data: {} }, t),
+      cms.contents.transition("a", "go", undefined, t),
+      cms.contents.schedule("a", { publishAt: null, unpublishAt: null }, t),
+      cms.contents.rollback("a", "v1", t),
+      cms.contents.erase("a", t),
+      cms.contents.setStatus("a", ContentStatus.Published, t),
+      cms.contents.history("a", t),
+      cms.contentTypes.list(t),
+      cms.contentTypes.create({ name: "post", fields: [] } as never, t),
+      cms.contentTypes.readable(t),
+      cms.contentTypes.get("post", t),
+      cms.blocks.schema(t),
+      cms.pages.tree(t),
+      cms.me.tenants(t),
+      cms.me.switch("t", t),
+      cms.auth.login("u", "p", undefined, t),
+      cms.auth.logout(t),
     ];
     for (const c of calls) await expect(c).rejects.toMatchObject({ code: "timeout" });
+  });
+
+  it("auth.refresh takes per-call options", async () => {
+    const cms = createClient({
+      baseUrl: BASE,
+      token: jwt({ tenant: "a" }),
+      refreshToken: "r1",
+      fetch: hangingFetch(),
+      timeouts: { readMs: 0 },
+    });
+    await expect(cms.auth.refresh({ timeoutMs: 20 })).rejects.toMatchObject({ code: "timeout" });
   });
 
   it("a negative or non-finite readMs or writeMs throws and names the field", () => {
@@ -213,8 +235,30 @@ describe("timeouts", () => {
   it("a GET that times out is not marked unknown", async () => {
     const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeouts: { readMs: 20, writeMs: 20 } });
     const err = await cms.public.list("post").catch((e) => e);
+    expect(err.message).toMatch(/timed out after 20 ms/);
     expect(err.outcomeUnknown).toBeUndefined();
     expect(err.message).not.toMatch(/unknown/);
+  });
+
+  it("a timeout above the timer limit is clamped, so it does not fire at once", async () => {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    const cms = createClient({ baseUrl: BASE, fetch: mockFetch([{ body: page }]), timeouts: { readMs: 3_000_000_000 } });
+    await cms.public.list("post");
+    const delays = spy.mock.calls.map((c) => Number(c[1]));
+    expect(Math.max(...delays)).toBe(2_147_483_647);
+  });
+
+  it("a timeout aborts the signal given to fetch and still reports timeout, not network", async () => {
+    let seen: AbortSignal | undefined;
+    const f = ((_url: string, init: RequestInit) => {
+      seen = init.signal as AbortSignal;
+      return new Promise<Response>((_, reject) => {
+        seen!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      });
+    }) as unknown as typeof fetch;
+    const cms = createClient({ baseUrl: BASE, fetch: f, timeouts: { readMs: 20 } });
+    await expect(cms.public.list("post")).rejects.toMatchObject({ code: "timeout" });
+    expect(seen!.aborted).toBe(true);
   });
 
   it("a POST that loses its connection says the outcome is unknown and is not retried", async () => {
@@ -398,6 +442,14 @@ describe("non-JSON bodies", () => {
     const err = await cms.public.list("post").catch((e) => e);
     expect(err).toBeInstanceOf(BarakoError);
     expect(err).toMatchObject({ code: "invalid-json", status: 200 });
+  });
+
+  it("a 200 with a 5000 character non-JSON body is cut in its body", async () => {
+    const cms = createClient({ baseUrl: BASE, fetch: mockFetch([{ status: 200, text: "x".repeat(5000) }]) });
+    const err = await cms.public.list("post").catch((e) => e);
+    expect(err.code).toBe("invalid-json");
+    expect((err.body as string).length).toBeLessThanOrEqual(500);
+    expect(err.message.length).toBeLessThanOrEqual(500);
   });
 
   it("a 502 with a 5000 character HTML body is cut in message and body", async () => {

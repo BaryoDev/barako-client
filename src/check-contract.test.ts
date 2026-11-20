@@ -28,6 +28,7 @@ describe("check-contract", () => {
     expect(r.out[0]).toContain("admin 16");
     expect(r.out[0]).toContain("delivery 10");
     expect(r.out[0]).toContain("supported 1 to 16");
+    expect(r.out[0]).toContain("in range");
   });
 
   it("does one GET to /api/meta with no auth", async () => {
@@ -97,7 +98,7 @@ describe("check-contract", () => {
     for (const argv of [["https://cms.test"], ["https://cms.test", "--strict"]]) {
       const r = await run(argv, answer({}));
       expect(r.code).toBe(1);
-      expect(r.out[0]).toContain("missing");
+      expect(r.out[0]).toContain("missing header");
     }
   });
 
@@ -124,6 +125,16 @@ describe("check-contract", () => {
     expect(r.out).toHaveLength(0);
   });
 
+  it("the unreachable line is one printable line of bounded length", async () => {
+    const r = await run(["https://cms.test"], (async () => {
+      throw new TypeError("bad\nline\u0007 " + "x".repeat(500));
+    }) as unknown as typeof fetch);
+    expect(r.code).toBe(2);
+    expect(r.err).toHaveLength(1);
+    expect(r.err[0]).not.toMatch(/[^\x20-\x7e]/);
+    expect(r.err[0].length).toBeLessThan(260);
+  });
+
   it("exits 2 on a timeout", async () => {
     const r = await run(["https://cms.test"], (() => new Promise<Response>(() => {})) as unknown as typeof fetch, 20);
     expect(r.code).toBe(2);
@@ -132,7 +143,7 @@ describe("check-contract", () => {
   it("--surface delivery ignores the admin number", async () => {
     const r = await run(
       ["https://cms.test", "--surface", "delivery"],
-      answer({ "X-Api-Contract-Version": "99", "X-Delivery-Contract-Version": "10" }),
+      answer({ "X-Api-Contract-Version": "0", "X-Delivery-Contract-Version": "10" }),
     );
     expect(r.code).toBe(0);
     expect(r.out[0]).not.toContain("admin");
@@ -141,7 +152,7 @@ describe("check-contract", () => {
   it("--surface admin ignores the delivery number", async () => {
     const r = await run(
       ["https://cms.test", "--surface=admin"],
-      answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "99" }),
+      answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "0" }),
     );
     expect(r.code).toBe(0);
   });
@@ -153,7 +164,7 @@ describe("check-contract", () => {
   });
 
   it("a missing url, a bad scheme or a bad surface is a usage error", async () => {
-    for (const argv of [[], ["ftp://cms.test"], ["https://cms.test", "--surface", "x"], ["https://cms.test", "--nope"]]) {
+    for (const argv of [[], ["ftp://cms.test"], ["https://cms.test", "--surface", "x"], ["https://cms.test", "--nope"], ["https://cms.test", "https://other.test"]]) {
       const r = await run(argv, answer({}));
       expect(r.code).toBe(2);
       expect(r.err[0]).toContain("usage:");
