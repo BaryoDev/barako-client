@@ -25,6 +25,7 @@ export function meResource(transport: Transport, store: TokenStore): MeResource 
         method: "POST",
         path: "/api/me/switch",
         body: { club: tenantSlug },
+        read: true, // saves nothing, so it takes the read timeout
         ...callOpts(opts),
       });
       // barakoCMS returns an empty refresh token here: the one from sign-in covers every tenant.

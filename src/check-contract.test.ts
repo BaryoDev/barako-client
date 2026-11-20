@@ -135,6 +135,51 @@ describe("check-contract", () => {
     expect(r.err[0].length).toBeLessThan(260);
   });
 
+  it("a 5xx with no contract header exits 2 and the line says the status", async () => {
+    for (const status of [502, 503]) {
+      const r = await run(["https://cms.test"], answer({}, status));
+      expect(r.code).toBe(2);
+      expect(r.err[0]).toContain(String(status));
+      expect(r.out).toHaveLength(0);
+    }
+  });
+
+  it("a 2xx or 4xx with no contract header exits 1", async () => {
+    for (const status of [200, 404]) {
+      const r = await run(["https://cms.test"], answer({}, status));
+      expect(r.code).toBe(1);
+      expect(r.out[0]).toContain("missing header");
+    }
+  });
+
+  it("a 5xx that carries the header is read as usual", async () => {
+    const r = await run(["https://cms.test"], answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "10" }, 500));
+    expect(r.code).toBe(0);
+  });
+
+  it("a URL with a user or password is a usage error and nothing is sent or printed back", async () => {
+    for (const url of ["https://user:SECRETPW@cms.test", "https://user@cms.test"]) {
+      const r = await run([url], answer({ "X-Api-Contract-Version": "16" }));
+      expect(r.code).toBe(2);
+      expect(r.calls).toHaveLength(0);
+      expect(r.err.join("\n")).not.toContain("SECRETPW");
+      expect(r.err[0]).toContain("user or password");
+    }
+  });
+
+  it("a credentials error from fetch is scrubbed in the unreachable line", async () => {
+    const r = await run(["https://cms.test"], (async () => {
+      throw new TypeError("includes credentials: https://user:SECRETPW@cms.test/api/meta");
+    }) as unknown as typeof fetch);
+    expect(r.err[0]).toContain("https://***@cms.test");
+    expect(r.err[0]).not.toContain("SECRETPW");
+  });
+
+  it("keeps the path, drops the query and fragment, and adds /api/meta", async () => {
+    const r = await run(["https://cms.test/root/v1/?x=1&y=2#top"], answer({ "X-Api-Contract-Version": "16" }));
+    expect(r.calls[0].url).toBe("https://cms.test/root/v1/api/meta");
+  });
+
   it("exits 2 on a timeout", async () => {
     const r = await run(["https://cms.test"], (() => new Promise<Response>(() => {})) as unknown as typeof fetch, 20);
     expect(r.code).toBe(2);

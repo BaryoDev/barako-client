@@ -29,6 +29,7 @@ export function authResource(transport: Transport, store: TokenStore): AuthResou
         body: { username, password },
         headers: tenant ? { "X-Tenant": tenant } : undefined,
         noRetry: true,
+        read: true, // saves nothing, so it takes the read timeout
         ...callOpts(opts),
       });
       if (tokens?.token) store.set({ token: tokens.token, refreshToken: tokens.refreshToken });
@@ -43,6 +44,7 @@ export function authResource(transport: Transport, store: TokenStore): AuthResou
           path: "/api/auth/logout",
           body: refreshToken ? { refreshToken } : {},
           noRetry: true,
+          read: true,
           ...callOpts(opts),
         });
       } finally {

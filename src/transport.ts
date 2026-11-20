@@ -1,5 +1,5 @@
 import type { Authenticator } from "./auth";
-import { fetchText, invalidJson, isRead, resolveTimeout, toError, type CallOptions, type HttpLimits, type TextResponse } from "./http";
+import { callOpts, fetchText, invalidJson, isRead, resolveTimeout, toError, type CallOptions, type HttpLimits, type TextResponse } from "./http";
 
 export interface RequestOptions extends CallOptions {
   method: string;
@@ -10,6 +10,9 @@ export interface RequestOptions extends CallOptions {
   headers?: Record<string, string>;
   /** Skip auth recovery/retry (used by the auth endpoints themselves). */
   noRetry?: boolean;
+  /** Count this request as a read for the timeout and the outcome note, whatever its method. For a
+   *  request that saves nothing (a login, a dry run). */
+  read?: boolean;
 }
 
 /** The HTTP layer: builds requests, attaches auth + tenant headers, retries once after a recovered
@@ -34,7 +37,7 @@ export class Transport {
   async requestWithHeaders<T>(opts: RequestOptions): Promise<{ body: T; headers: Headers }> {
     let res = await this.send(opts);
 
-    if (res.status === 401 && !opts.noRetry && (await this.auth.recover())) {
+    if (res.status === 401 && !opts.noRetry && (await this.auth.recover(callOpts(opts)))) {
       res = await this.send(opts); // retry once with the refreshed credential
     }
 
@@ -70,16 +73,15 @@ export class Transport {
       body = JSON.stringify(opts.body);
     }
 
+    const read = opts.read ?? isRead(opts.method);
     const res = await fetchText(
       this.fetchImpl,
       url,
       { method: opts.method, headers, body },
       {
         signals: [this.limits.signal, opts.signal],
-        timeoutMs: resolveTimeout(
-          opts.timeoutMs,
-          isRead(opts.method) ? this.limits.timeouts.readMs : this.limits.timeouts.writeMs,
-        ),
+        timeoutMs: resolveTimeout(opts.timeoutMs, read ? this.limits.timeouts.readMs : this.limits.timeouts.writeMs),
+        read,
       },
     );
     this.limits.onResponse?.(opts.path, res.headers);

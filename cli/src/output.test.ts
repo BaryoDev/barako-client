@@ -145,6 +145,17 @@ describe("toCliError", () => {
     expect(toCliError(e).code).toBe("network");
   });
 
+  it.each([
+    ["network", "Network error: fetch failed."],
+    ["timeout", "The request timed out after 30000 ms."],
+    ["aborted", "The request was aborted."],
+  ] as const)("maps a client %s error to network, exit 6", (code, message) => {
+    const e = toCliError(new BarakoError(0, message, undefined, { code }));
+    expect(e.code).toBe("network");
+    expect(exitFor(e.code)).toBe(6);
+    expect(e.message).toBe(message);
+  });
+
   it("passes a CliError through", () => {
     const c = new CliError("usage", "m");
     expect(toCliError(c)).toBe(c);

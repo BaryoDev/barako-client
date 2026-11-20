@@ -121,6 +121,7 @@ export function contentsResource(transport: Transport): ContentsResource {
         path: "/api/contents",
         body: opts?.dryRun ? { ...input, dryRun: true } : input,
         headers: opts?.idempotencyKey ? { "Idempotency-Key": opts.idempotencyKey } : undefined,
+        read: Boolean(opts?.dryRun), // a dry run saves nothing, so it takes the read timeout
         ...callOpts(opts),
       })) as ContentsResource["create"],
 
@@ -134,6 +135,7 @@ export function contentsResource(transport: Transport): ContentsResource {
         path: `/api/contents/${pathSegment(id)}`,
         body: opts?.dryRun ? { id, ...input, dryRun: true } : { id, ...input },
         headers: opts?.ifMatch ? { "If-Match": opts.ifMatch } : undefined,
+        read: Boolean(opts?.dryRun), // a dry run saves nothing, so it takes the read timeout
         ...callOpts(opts),
       });
       // The server sets no ETag on a dry run, so the header is read for real writes only.

@@ -40,13 +40,15 @@ export function resolveTimeouts(timeouts?: Timeouts): { readMs: number; writeMs:
     readMs: timeouts?.readMs ?? DEFAULT_READ_TIMEOUT_MS,
     writeMs: timeouts?.writeMs ?? DEFAULT_WRITE_TIMEOUT_MS,
   };
-  for (const field of ["readMs", "writeMs"] as const) {
-    const v = out[field];
-    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
-      throw new Error(`createClient: timeouts.${field} must be 0 or a positive finite number of milliseconds.`);
-    }
-  }
+  for (const field of ["readMs", "writeMs"] as const) checkTimeout(`createClient: timeouts.${field}`, out[field]);
   return out;
+}
+
+/** Throws unless `v` is 0 or a positive finite number. `label` names the setting in the message. */
+function checkTimeout(label: string, v: unknown): asserts v is number {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+    throw new Error(`${label} must be 0 or a positive finite number of milliseconds.`);
+  }
 }
 
 // setTimeout treats anything above this as 1 ms.
@@ -61,10 +63,12 @@ export interface TextResponse {
   text: string;
 }
 
-/** The effective timeout: the per-call value if it is a usable number, else the default. */
+/** The effective timeout: the per-call value when given, else the default. A per-call value that
+ *  config would reject throws, so a bad number is never ignored. */
 export function resolveTimeout(perCall: number | undefined, fallback: number): number {
-  if (typeof perCall === "number" && Number.isFinite(perCall) && perCall >= 0) return perCall;
-  return fallback;
+  if (perCall === undefined) return fallback;
+  checkTimeout("timeoutMs", perCall);
+  return perCall;
 }
 
 /**
@@ -79,15 +83,19 @@ export async function fetchText(
   fetchImpl: typeof fetch,
   url: string,
   init: { method: string; headers: Record<string, string>; body?: string },
-  limits: { signals: Array<AbortSignal | undefined>; timeoutMs: number },
+  limits: { signals: Array<AbortSignal | undefined>; timeoutMs: number; read?: boolean },
 ): Promise<TextResponse> {
-  const writes = !isRead(init.method);
+  const writes = !(limits.read ?? isRead(init.method));
   const unknownNote = writes ? " The outcome is unknown, the server may have applied the request." : "";
-  const failure = (status: number, message: string, code: "timeout" | "aborted" | "network") =>
-    new BarakoError(status, message, undefined, {
+  // An abort before fetch started cannot have reached the server, so only then is the outcome known.
+  let started = false;
+  const failure = (status: number, message: string, code: "timeout" | "aborted" | "network") => {
+    const unknown = writes && (code !== "aborted" || started);
+    return new BarakoError(status, unknown && code === "aborted" ? message + unknownNote : message, undefined, {
       code,
-      outcomeUnknown: writes && code !== "aborted",
+      outcomeUnknown: unknown,
     });
+  };
 
   const controller = new AbortController();
   let fail!: (e: BarakoError) => void;
@@ -122,6 +130,7 @@ export async function fetchText(
     }
 
     const work = (async (): Promise<TextResponse> => {
+      started = true;
       const res = await fetchImpl(url, { ...init, signal: controller.signal });
       const text = await res.text();
       return { status: res.status, statusText: res.statusText, ok: res.ok, headers: res.headers, text };
@@ -130,7 +139,8 @@ export async function fetchText(
     return await Promise.race([work, stop]);
   } catch (e) {
     if (e instanceof BarakoError) throw e;
-    const reason = e instanceof Error ? e.message : String(e);
+    // The reason comes from the fetch implementation, so it is scrubbed, bounded and kept to one line.
+    const reason = clip(scrubUrls(e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim());
     throw failure(0, `Network error: ${reason}.${unknownNote}`, "network");
   } finally {
     if (timer !== undefined) clearTimeout(timer);
@@ -144,6 +154,12 @@ const MAX_TEXT = 500;
  *  message or a log. The result is at most MAX_TEXT characters. */
 export function clip(text: string): string {
   return text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT - 3)}...` : text;
+}
+
+/** Replaces `scheme://user:pass@` with `scheme://***@`, so a URL with credentials in an error text
+ *  does not leak them. */
+export function scrubUrls(text: string): string {
+  return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\/\s]+@/gi, "$1***@");
 }
 
 /** The error for a response whose body should have been JSON and was not. */
@@ -168,6 +184,48 @@ export function toError(res: TextResponse): BarakoError {
     }
   }
   return new BarakoError(res.status, message, body);
+}
+
+/**
+ * Waits for `work`, but gives up for this caller when one of its signals fires or its deadline
+ * passes. `work` itself is not cancelled, so other callers sharing it still get its result. Rejects
+ * with BarakoError code `aborted` or `timeout`, the text starting with `prefix`.
+ */
+export function waitBounded<T>(
+  work: Promise<T>,
+  limits: { signals: Array<AbortSignal | undefined>; timeoutMs?: number },
+  prefix: string,
+): Promise<T> {
+  const attached: AbortSignal[] = [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let leave!: (e: BarakoError) => void;
+  const left = new Promise<never>((_, reject) => {
+    leave = reject;
+  });
+  const aborted = () => new BarakoError(0, `${prefix} The request was aborted.`, undefined, { code: "aborted" });
+  const onAbort = () => leave(aborted());
+  for (const signal of limits.signals) {
+    if (!signal) continue;
+    if (signal.aborted) {
+      for (const a of attached) a.removeEventListener("abort", onAbort);
+      work.catch(() => {});
+      return Promise.reject(aborted());
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    attached.push(signal);
+  }
+  const ms = limits.timeoutMs;
+  if (ms !== undefined && ms > 0) {
+    timer = setTimeout(
+      () => leave(new BarakoError(0, `${prefix} The request timed out after ${ms} ms.`, undefined, { code: "timeout" })),
+      Math.min(ms, MAX_TIMER_MS),
+    );
+  }
+  left.catch(() => {});
+  return Promise.race([work, left]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+    for (const signal of attached) signal.removeEventListener("abort", onAbort);
+  });
 }
 
 /** The per-call fields of a RequestOptions, taken from a CallOptions. */

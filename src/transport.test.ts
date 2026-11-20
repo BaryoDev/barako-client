@@ -270,7 +270,98 @@ describe("timeouts", () => {
     const cms = createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: f });
     const err = await cms.contents.create({ contentType: "post", data: {} }).catch((e) => e);
     expect(err).toMatchObject({ code: "network", status: 0, outcomeUnknown: true });
+    expect(err.message).toContain("Network error: fetch failed");
+    expect(err.message).toContain("The outcome is unknown, the server may have applied the request.");
     expect(n).toBe(1);
+  });
+});
+
+describe("requests that save nothing", () => {
+  const calls: Array<[string, (cms: ReturnType<typeof createClient>) => Promise<unknown>]> = [
+    ["auth.login", (c) => c.auth.login("u", "p")],
+    ["auth.logout", (c) => c.auth.logout()],
+    ["me.switch", (c) => c.me.switch("t")],
+    ["contents.create with dryRun", (c) => c.contents.create({ contentType: "post", data: {} }, { dryRun: true })],
+    ["contents.update with dryRun", (c) => c.contents.update("a", { data: {} }, { dryRun: true })],
+  ];
+
+  it.each(calls)("%s takes the read default of 30000 ms", async (_name, call) => {
+    vi.useFakeTimers();
+    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch() });
+    const result = call(cms).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(29_999);
+    let settled = false;
+    void result.then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toMatchObject({ code: "timeout" });
+  });
+
+  it("a timed out dry run does not say the outcome is unknown", async () => {
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: hangingFetch(), timeouts: { readMs: 20 } });
+    const err = await cms.contents.create({ contentType: "post", data: {} }, { dryRun: true }).catch((e) => e);
+    expect(err).toMatchObject({ code: "timeout" });
+    expect(err.outcomeUnknown).toBeUndefined();
+    expect(err.message).not.toMatch(/outcome/);
+  });
+
+  it("a real create still takes the write default and says the outcome is unknown", async () => {
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: hangingFetch(), timeouts: { readMs: 20, writeMs: 40 } });
+    const err = await cms.contents.create({ contentType: "post", data: {} }).catch((e) => e);
+    expect(err.message).toMatch(/after 40 ms/);
+    expect(err.message).toMatch(/outcome is unknown/);
+  });
+});
+
+describe("per-call timeoutMs that config would reject", () => {
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, "5"])("%s throws before any request", async (bad) => {
+    const f = hangingFetch();
+    const cms = createClient({ baseUrl: BASE, fetch: f });
+    await expect(cms.public.list("post", undefined, { timeoutMs: bad as never })).rejects.toThrow(
+      /timeoutMs must be 0 or a positive finite number of milliseconds/,
+    );
+    expect(f.calls).toHaveLength(0);
+  });
+});
+
+describe("network error text", () => {
+  const failing = (message: string) =>
+    (async () => {
+      throw new TypeError(message);
+    }) as unknown as typeof fetch;
+
+  it("scrubs credentials from a URL in the reason", async () => {
+    const cms = createClient({
+      baseUrl: BASE,
+      fetch: failing("Request cannot be constructed from a URL that includes credentials: https://user:SECRETPW@cms.test/x"),
+    });
+    const err = await cms.public.list("post").catch((e) => e);
+    expect(err.message).toContain("https://***@cms.test/x");
+    expect(err.message).not.toContain("SECRETPW");
+  });
+
+  it("cuts a long multi-line reason to one bounded line", async () => {
+    const cms = createClient({ baseUrl: BASE, fetch: failing(`boom\nsecond line\n${"y".repeat(3000)}`) });
+    const err = await cms.public.list("post").catch((e) => e);
+    expect(err.message).not.toMatch(/[\r\n]/);
+    expect(err.message.length).toBeLessThan(600);
+    expect(err.message).toContain("boom second line");
+  });
+});
+
+describe("baseUrl with credentials", () => {
+  it("createClient throws a config error", () => {
+    expect(() => createClient({ baseUrl: "https://user:pw@cms.test/api" })).toThrow(/baseUrl must not contain a user or password/);
+    expect(() => createClient({ baseUrl: "https://user@cms.test/api" })).toThrow(/baseUrl must not contain/);
+  });
+
+  it("the error does not repeat the password", () => {
+    try {
+      createClient({ baseUrl: "https://user:SECRETPW@cms.test/api" });
+    } catch (e) {
+      expect((e as Error).message).not.toContain("SECRETPW");
+    }
   });
 });
 
@@ -290,6 +381,52 @@ describe("abort signals", () => {
       code: "aborted",
     });
     expect(f.calls).toHaveLength(0);
+  });
+
+  it("an abort of a POST after fetch started says the outcome is unknown", async () => {
+    const f = hangingFetch();
+    const ctl = new AbortController();
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: f });
+    const pending = cms.contents.create({ contentType: "post", data: {} }, { signal: ctl.signal });
+    ctl.abort();
+    const err = await pending.catch((e) => e);
+    expect(f.calls).toHaveLength(1);
+    expect(err).toMatchObject({ code: "aborted", status: 0, outcomeUnknown: true });
+    expect(err.message).toContain("The outcome is unknown, the server may have applied the request.");
+  });
+
+  it("an abort of a PUT, PATCH or DELETE after fetch started says the outcome is unknown", async () => {
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: hangingFetch() });
+    for (const call of [
+      (signal: AbortSignal) => cms.contents.update("a", { data: {} }, { signal }),
+      (signal: AbortSignal) => cms.contents.setStatus("a", ContentStatus.Published, { signal }),
+      (signal: AbortSignal) => cms.contents.erase("a", { signal }),
+    ]) {
+      const ctl = new AbortController();
+      const pending = call(ctl.signal);
+      ctl.abort();
+      await expect(pending).rejects.toMatchObject({ code: "aborted", outcomeUnknown: true });
+    }
+  });
+
+  it("an abort of a POST before fetch started does not say the outcome is unknown", async () => {
+    const f = hangingFetch();
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: f });
+    const err = await cms.contents.create({ contentType: "post", data: {} }, { signal: AbortSignal.abort() }).catch((e) => e);
+    expect(f.calls).toHaveLength(0);
+    expect(err).toMatchObject({ code: "aborted" });
+    expect(err.outcomeUnknown).toBeUndefined();
+    expect(err.message).not.toMatch(/outcome/);
+  });
+
+  it("an abort of a GET does not say the outcome is unknown", async () => {
+    const ctl = new AbortController();
+    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch() });
+    const pending = cms.public.list("post", undefined, { signal: ctl.signal });
+    ctl.abort();
+    const err = await pending.catch((e) => e);
+    expect(err.outcomeUnknown).toBeUndefined();
+    expect(err.message).toBe("The request was aborted.");
   });
 
   it("a config signal aborts with code aborted", async () => {
@@ -433,6 +570,126 @@ describe("refresh that survives a transient failure", () => {
     const cms = createClient({ baseUrl: BASE, token: old, refreshToken: "r1", fetch: f, timeouts: { readMs: 20, writeMs: 20 } });
     await expect(cms.contents.create({ contentType: "post", data: {} })).rejects.toMatchObject({ code: "timeout" });
     expect(f.calls).toHaveLength(1);
+  });
+});
+
+describe("refresh details", () => {
+  const old = jwt({ tenant: "acme" });
+
+  /** A client whose first call gets a 401 and whose refresh answers with `refresh`. */
+  function setup(refresh: (url: string) => Promise<Response>, config: { baseUrl?: string; readMs?: number } = {}) {
+    const store = memoryStore({ token: old, refreshToken: "r1" });
+    const urls: string[] = [];
+    const f = (async (url: string, init: RequestInit) => {
+      urls.push(url);
+      if (url.endsWith("/api/auth/refresh")) return refresh(url);
+      const auth = (init.headers as Record<string, string>).Authorization;
+      return auth === "Bearer n1" ? new Response(JSON.stringify(page), { status: 200 }) : new Response("{}", { status: 401 });
+    }) as unknown as typeof fetch;
+    const cms = createClient({
+      baseUrl: config.baseUrl ?? BASE,
+      storage: store,
+      fetch: f,
+      timeouts: { readMs: config.readMs ?? 2000 },
+    });
+    return { cms, store, urls };
+  }
+
+  it("a caller's abort ends its wait at once and leaves the refresh to the other caller", async () => {
+    let release!: () => void;
+    let refreshes = 0;
+    const { cms, store } = setup(async () => {
+      refreshes++;
+      await new Promise<void>((r) => (release = r));
+      return new Response(JSON.stringify({ token: "n1", refreshToken: "r2" }), { status: 200 });
+    });
+    const ctl = new AbortController();
+    const started = Date.now();
+    const a = cms.contents.list(undefined, { signal: ctl.signal }).catch((e) => e);
+    const b = cms.contents.list().catch((e) => e);
+    setTimeout(() => ctl.abort(), 50);
+    const errA = await a;
+    const waited = Date.now() - started;
+    expect(errA).toMatchObject({ code: "aborted", status: 0 });
+    expect(errA.message).toMatch(/^Token refresh failed\./);
+    expect(waited).toBeGreaterThanOrEqual(40);
+    expect(waited).toBeLessThan(600);
+    release();
+    const resB = await b;
+    expect(resB).not.toBeInstanceOf(Error);
+    expect(refreshes).toBe(1);
+    expect(store.get()).toEqual({ token: "n1", refreshToken: "r2" });
+  });
+
+  it("a per-call timeoutMs ends the caller's wait for a hung refresh", async () => {
+    const { cms, store } = setup(() => new Promise<Response>(() => {}), { readMs: 2000 });
+    const started = Date.now();
+    const err = await cms.contents.list(undefined, { timeoutMs: 50 }).catch((e) => e);
+    expect(err).toMatchObject({ code: "timeout", status: 0 });
+    expect(err.message).toMatch(/^Token refresh failed\. The request timed out after 50 ms/);
+    expect(Date.now() - started).toBeLessThan(600);
+    expect(store.get().refreshToken).toBe("r1");
+  });
+
+  it.each([403, 503])("a refresh that answers %i rejects with the refresh prefix and keeps its status", async (status) => {
+    const { cms, store } = setup(async () => new Response(JSON.stringify({ message: "nope" }), { status }));
+    const err = await cms.contents.list().catch((e) => e);
+    expect(err).toBeInstanceOf(BarakoError);
+    expect(err.status).toBe(status);
+    expect(err.message).toBe("Token refresh failed. nope");
+    expect(store.get()).toEqual({ token: old, refreshToken: "r1" });
+  });
+
+  it.each([{ refreshToken: "r2" }, { token: "", refreshToken: "r2" }, { token: 5, refreshToken: "r2" }])(
+    "a refresh 200 with %j has no usable token: invalid-json and the tokens stay",
+    async (answer) => {
+      const { cms, store, urls } = setup(async () => new Response(JSON.stringify(answer), { status: 200 }));
+      const err = await cms.contents.list().catch((e) => e);
+      expect(err).toMatchObject({ code: "invalid-json", status: 200 });
+      expect(JSON.stringify(err.body)).not.toContain("r2");
+      expect(store.get()).toEqual({ token: old, refreshToken: "r1" });
+      expect(urls).toHaveLength(2);
+    },
+  );
+
+  it("a baseUrl with a trailing slash refreshes at /api/auth/refresh", async () => {
+    const { cms, urls } = setup(
+      async () => new Response(JSON.stringify({ token: "n1", refreshToken: "r2" }), { status: 200 }),
+      { baseUrl: `${BASE}/` },
+    );
+    await cms.contents.list();
+    expect(urls).toContain(`${BASE}/api/auth/refresh`);
+    expect(urls.some((u) => u.includes("//api"))).toBe(false);
+  });
+});
+
+describe("allPages", () => {
+  const endless = () => {
+    let n = 0;
+    const fn = (async () => {
+      n++;
+      return new Response(JSON.stringify({ items: [{ slug: "a" }], page: n, pageSize: 100, totalCount: 0, hasNextPage: true }));
+    }) as unknown as typeof fetch;
+    return Object.assign(fn, { count: () => n });
+  };
+
+  it("stops after 1000 pages with an error that names the cap", async () => {
+    const f = endless();
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: f });
+    await expect(cms.me.tenants()).rejects.toThrow(/did not end after 1000 pages/);
+    expect(f.count()).toBe(1000);
+  });
+
+  it("a per-call signal stops the whole loop", async () => {
+    const ctl = new AbortController();
+    let n = 0;
+    const f = (async () => {
+      if (++n === 3) ctl.abort();
+      return new Response(JSON.stringify({ items: [{ slug: "a" }], hasNextPage: true }));
+    }) as unknown as typeof fetch;
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: f });
+    await expect(cms.me.tenants({ signal: ctl.signal })).rejects.toMatchObject({ code: "aborted" });
+    expect(n).toBe(3);
   });
 });
 

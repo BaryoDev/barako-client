@@ -54,6 +54,16 @@ export interface BarakoClient {
   public: PublicResource;
 }
 
+/** True when the URL parses and carries a user or password. A relative URL has neither. */
+function hasCredentials(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.username !== "" || u.password !== "";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Create a barakoCMS client. Framework-agnostic; runs anywhere fetch does.
  *
@@ -69,6 +79,12 @@ export interface BarakoClient {
  */
 export function createClient(config: ClientConfig): BarakoClient {
   if (!config.baseUrl) throw new Error("createClient: baseUrl is required.");
+  if (hasCredentials(config.baseUrl)) {
+    throw new Error(
+      "createClient: baseUrl must not contain a user or password. Use apiKey, or sign in with auth.login.",
+    );
+  }
+  const baseUrl = config.baseUrl.replace(/\/+$/, "");
   const fetchImpl = config.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
     throw new Error("createClient: no global fetch here, pass config.fetch.");
@@ -86,7 +102,7 @@ export function createClient(config: ClientConfig): BarakoClient {
 
   const auth: Authenticator = config.apiKey
     ? new ApiKeyAuthenticator(config.apiKey)
-    : new JwtAuthenticator(store, config.baseUrl, fetchImpl, config.tenant, limits);
+    : new JwtAuthenticator(store, baseUrl, fetchImpl, config.tenant, limits);
 
   const transport = new Transport(config.baseUrl, auth, fetchImpl, limits);
 

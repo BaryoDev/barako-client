@@ -74,6 +74,11 @@ export function exitFor(code: ErrorCode): number {
 export function toCliError(err: unknown): CliError {
   if (err instanceof CliError) return err;
   if (err instanceof BarakoError) {
+    // No HTTP answer: a timeout, an abort or a network failure all end as a network error, as a raw
+    // fetch failure did before the client wrapped it. The CLI has no separate interrupt code.
+    if (err.code === "network" || err.code === "timeout" || err.code === "aborted") {
+      return new CliError("network", err.message);
+    }
     const message = err.status === 429 ? "The server is rate limiting this key. Retry later." : err.message;
     return new CliError(codeForStatus(err.status), message, {
       status: err.status,
