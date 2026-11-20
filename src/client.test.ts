@@ -145,6 +145,18 @@ describe("keeping the refresh token", () => {
     });
   }
 
+  it("switch sends the tenant as tenant, and as club for an API older than 4.6", async () => {
+    const store = memoryStore({ token: jwt({ tenant: "home" }), refreshToken: "r1" });
+    const fetchImpl = mockFetch([{ body: { token: jwt({ tenant: "away" }), expiry: "", refreshToken: "" } }]);
+    const cms = createClient({ baseUrl: BASE, storage: store, fetch: fetchImpl });
+
+    await cms.me.switch("away");
+
+    const call = fetchImpl.calls.find((c) => c.url.endsWith("/api/me/switch"));
+    expect(call).toBeDefined();
+    expect(JSON.parse(call!.init.body as string)).toEqual({ tenant: "away", club: "away" });
+  });
+
   it("switch still stores a refresh token an older API returns", async () => {
     const away = jwt({ tenant: "away" });
     const store = memoryStore({ token: jwt({ tenant: "home" }), refreshToken: "r1" });

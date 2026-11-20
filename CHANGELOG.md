@@ -15,6 +15,7 @@
 - The client reads `X-Api-Contract-Version` and `X-Delivery-Contract-Version` and warns once per surface when the API is outside the supported range (admin 1 to 16, delivery 1 to 10, exported as `SUPPORTED_CONTRACT`).
 - New command `barako-client check-contract <api url> [--strict]` for CI. Exit 0 in range or newer than the client, 1 older than the client or a missing header (and newer with `--strict`), 2 unreachable, a 5xx with no contract header, or bad arguments (a URL with a user or password included). The URL's path is kept and a query or fragment is dropped.
 - Known limit: a refresh that times out after the server already rotated the token leaves the client holding the old one. The server's replay rule decides what happens next.
+- `me.switch()` sends the tenant as `tenant`, the name barakoCMS reads since 4.6, and still as `club` for older APIs.
 
 ## 0.5.0
 

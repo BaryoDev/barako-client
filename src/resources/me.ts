@@ -24,7 +24,9 @@ export function meResource(transport: Transport, store: TokenStore): MeResource 
       const tokens = await transport.request<AuthTokens>({
         method: "POST",
         path: "/api/me/switch",
-        body: { club: tenantSlug },
+        // barakoCMS 4.6 reads `tenant`. Older APIs read only `club`, so both go until the lowest
+        // supported API is 4.6; the API accepts both when they name the same tenant.
+        body: { tenant: tenantSlug, club: tenantSlug },
         read: true, // saves nothing, so it takes the read timeout
         ...callOpts(opts),
       });
