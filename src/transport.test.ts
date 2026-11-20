@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BarakoError, createClient, memoryStore } from "./index";
+import { BarakoError, ContentStatus, createClient, memoryStore } from "./index";
 
 const BASE = "https://cms.test/barakocms-api";
 
@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("timeouts", () => {
   it("a fetch that never resolves rejects with code timeout within the timeout", async () => {
-    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeoutMs: 30 });
+    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeouts: { readMs: 30, writeMs: 30 } });
     const started = Date.now();
     const err = await cms.public.list("post").catch((e) => e);
     expect(err).toBeInstanceOf(BarakoError);
@@ -53,11 +53,11 @@ describe("timeouts", () => {
   it("a body that never finishes also times out", async () => {
     const stalled = (async () =>
       new Response(new ReadableStream({ start() {} }), { status: 200 })) as unknown as typeof fetch;
-    const cms = createClient({ baseUrl: BASE, fetch: stalled, timeoutMs: 30 });
+    const cms = createClient({ baseUrl: BASE, fetch: stalled, timeouts: { readMs: 30, writeMs: 30 } });
     await expect(cms.public.list("post")).rejects.toMatchObject({ code: "timeout" });
   });
 
-  it("the default timeout is 30000 ms", async () => {
+  it("a GET with the defaults times out at 30000 ms", async () => {
     vi.useFakeTimers();
     const cms = createClient({ baseUrl: BASE, fetch: hangingFetch() });
     const result = cms.public.list("post").catch((e) => e);
@@ -70,9 +70,29 @@ describe("timeouts", () => {
     expect(await result).toMatchObject({ code: "timeout" });
   });
 
-  it("timeoutMs 0 leaves no timer", async () => {
+  it("a POST with the defaults leaves no timer", async () => {
     vi.useFakeTimers();
-    const cms = createClient({ baseUrl: BASE, fetch: mockFetch([{ body: page }]), timeoutMs: 0 });
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: hangingFetch() });
+    void cms.contents.create({ contentType: "post", data: {} }).catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a POST with the defaults is still pending after an hour", async () => {
+    vi.useFakeTimers();
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: hangingFetch() });
+    let settled = false;
+    void cms.contents.create({ contentType: "post", data: {} }).then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(settled).toBe(false);
+  });
+
+  it("readMs 0 leaves no timer on a GET", async () => {
+    vi.useFakeTimers();
+    const cms = createClient({ baseUrl: BASE, fetch: mockFetch([{ body: page }]), timeouts: { readMs: 0 } });
     const pending = cms.public.list("post");
     expect(vi.getTimerCount()).toBe(0);
     await pending;
@@ -81,25 +101,109 @@ describe("timeouts", () => {
 
   it("a finished request leaves no timer behind", async () => {
     vi.useFakeTimers();
-    const cms = createClient({ baseUrl: BASE, fetch: mockFetch([{ body: page }]), timeoutMs: 5000 });
+    const cms = createClient({ baseUrl: BASE, fetch: mockFetch([{ body: page }]), timeouts: { readMs: 5000 } });
     await cms.public.list("post");
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("a per-request timeoutMs overrides the client's", async () => {
-    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeoutMs: 0 });
+  it("config readMs applies to a GET and not to a POST", async () => {
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: hangingFetch(), timeouts: { readMs: 20 } });
+    await expect(cms.contents.list()).rejects.toMatchObject({ code: "timeout" });
+    vi.useFakeTimers();
+    let settled = false;
+    void cms.contents.create({ contentType: "post", data: {} }).then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(settled).toBe(false);
+  });
+
+  it("config writeMs applies to a POST and not to a GET", async () => {
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: hangingFetch(), timeouts: { writeMs: 20 } });
+    await expect(cms.contents.create({ contentType: "post", data: {} })).rejects.toMatchObject({
+      code: "timeout",
+      outcomeUnknown: true,
+    });
+    vi.useFakeTimers();
+    let settled = false;
+    void cms.contents.list().then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(settled).toBe(false);
+  });
+
+  it("a per-request timeoutMs overrides the client's read default", async () => {
+    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeouts: { readMs: 0 } });
     await expect(cms.public.list("post", undefined, { timeoutMs: 20 })).rejects.toMatchObject({
       code: "timeout",
     });
   });
 
-  it("rejects a negative timeoutMs on the client", () => {
-    expect(() => createClient({ baseUrl: BASE, fetch: hangingFetch(), timeoutMs: -1 })).toThrow(/timeoutMs/);
+  it("a per-call timeoutMs on contents.create overrides writeMs", async () => {
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: hangingFetch(), timeouts: { writeMs: 0 } });
+    await expect(
+      cms.contents.create({ contentType: "post", data: {} }, { timeoutMs: 20 }),
+    ).rejects.toMatchObject({ code: "timeout", outcomeUnknown: true });
+  });
+
+  it("a per-call timeoutMs of 0 turns the read default off", async () => {
+    vi.useFakeTimers();
+    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch() });
+    let settled = false;
+    void cms.public.list("post", undefined, { timeoutMs: 0 }).then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(settled).toBe(false);
+  });
+
+  it("a per-call signal and timeoutMs reach public.bySlug and public.menu", async () => {
+    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeouts: { readMs: 0 } });
+    await expect(cms.public.bySlug("post", "a", { timeoutMs: 20 })).rejects.toMatchObject({ code: "timeout" });
+    await expect(cms.public.menu("main", { timeoutMs: 20 })).rejects.toMatchObject({ code: "timeout" });
+    const ctl = new AbortController();
+    const a = cms.public.bySlug("post", "a", { signal: ctl.signal });
+    const b = cms.public.menu("main", { signal: ctl.signal });
+    ctl.abort();
+    await expect(a).rejects.toMatchObject({ code: "aborted" });
+    await expect(b).rejects.toMatchObject({ code: "aborted" });
+  });
+
+  it("a per-call timeoutMs reaches the other resources", async () => {
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: hangingFetch(), timeouts: { readMs: 0 } });
+    const calls = [
+      cms.contents.get("a", { timeoutMs: 20 }),
+      cms.contents.history("a", { timeoutMs: 20 }),
+      cms.contentTypes.list({ timeoutMs: 20 }),
+      cms.contentTypes.readable({ timeoutMs: 20 }),
+      cms.blocks.schema({ timeoutMs: 20 }),
+      cms.pages.tree({ timeoutMs: 20 }),
+      cms.me.tenants({ timeoutMs: 20 }),
+      cms.contents.setStatus("a", ContentStatus.Published, { timeoutMs: 20 }),
+      cms.contents.erase("a", { timeoutMs: 20 }),
+      cms.me.switch("t", { timeoutMs: 20 }),
+      cms.auth.login("u", "p", undefined, { timeoutMs: 20 }),
+    ];
+    for (const c of calls) await expect(c).rejects.toMatchObject({ code: "timeout" });
+  });
+
+  it("a negative or non-finite readMs or writeMs throws and names the field", () => {
+    for (const field of ["readMs", "writeMs"] as const) {
+      for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(() =>
+          createClient({ baseUrl: BASE, fetch: hangingFetch(), timeouts: { [field]: bad } }),
+        ).toThrow(new RegExp(`timeouts\\.${field}`));
+      }
+    }
   });
 
   it("a POST that times out says the outcome is unknown, and is sent once", async () => {
     const f = hangingFetch();
-    const cms = createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: f, timeoutMs: 20 });
+    const cms = createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: f, timeouts: { readMs: 20, writeMs: 20 } });
     const err = await cms.contents.create({ contentType: "post", data: {} }).catch((e) => e);
     expect(err).toMatchObject({ code: "timeout", status: 0, outcomeUnknown: true });
     expect(err.message).toMatch(/outcome is unknown/);
@@ -107,7 +211,7 @@ describe("timeouts", () => {
   });
 
   it("a GET that times out is not marked unknown", async () => {
-    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeoutMs: 20 });
+    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeouts: { readMs: 20, writeMs: 20 } });
     const err = await cms.public.list("post").catch((e) => e);
     expect(err.outcomeUnknown).toBeUndefined();
     expect(err.message).not.toMatch(/unknown/);
@@ -129,7 +233,7 @@ describe("timeouts", () => {
 describe("abort signals", () => {
   it("a per-request signal aborts with code aborted", async () => {
     const ctl = new AbortController();
-    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeoutMs: 0 });
+    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeouts: { readMs: 0, writeMs: 0 } });
     const pending = cms.public.list("post", undefined, { signal: ctl.signal });
     ctl.abort();
     await expect(pending).rejects.toMatchObject({ code: "aborted", status: 0 });
@@ -137,7 +241,7 @@ describe("abort signals", () => {
 
   it("a signal that is already aborted never reaches fetch", async () => {
     const f = hangingFetch();
-    const cms = createClient({ baseUrl: BASE, fetch: f, timeoutMs: 0 });
+    const cms = createClient({ baseUrl: BASE, fetch: f, timeouts: { readMs: 0, writeMs: 0 } });
     await expect(cms.public.list("post", undefined, { signal: AbortSignal.abort() })).rejects.toMatchObject({
       code: "aborted",
     });
@@ -146,7 +250,7 @@ describe("abort signals", () => {
 
   it("a config signal aborts with code aborted", async () => {
     const ctl = new AbortController();
-    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeoutMs: 0, signal: ctl.signal });
+    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch(), timeouts: { readMs: 0, writeMs: 0 }, signal: ctl.signal });
     const pending = cms.public.list("post");
     ctl.abort();
     await expect(pending).rejects.toMatchObject({ code: "aborted" });
@@ -219,10 +323,24 @@ describe("refresh that survives a transient failure", () => {
       n++ === 0
         ? Promise.resolve(new Response("{}", { status: 401 }))
         : new Promise<Response>(() => {})) as unknown as typeof fetch;
-    const cms = createClient({ baseUrl: BASE, storage: store, fetch: f, timeoutMs: 20 });
+    const cms = createClient({ baseUrl: BASE, storage: store, fetch: f, timeouts: { readMs: 20 } });
     const err = await cms.contents.list().catch((e) => e);
     expect(store.get()).toEqual({ token: old, refreshToken: "r1" });
     expect(err).toMatchObject({ status: 0, code: "timeout" });
+  });
+
+  it("the refresh POST uses readMs, not writeMs", async () => {
+    const store = memoryStore({ token: old, refreshToken: "r1" });
+    let n = 0;
+    const f = (() =>
+      n++ === 0
+        ? Promise.resolve(new Response("{}", { status: 401 }))
+        : new Promise<Response>(() => {})) as unknown as typeof fetch;
+    // writeMs is 0 (no limit), so only readMs can end this refresh.
+    const cms = createClient({ baseUrl: BASE, storage: store, fetch: f, timeouts: { readMs: 20, writeMs: 0 } });
+    const err = await cms.contents.list().catch((e) => e);
+    expect(err).toMatchObject({ code: "timeout" });
+    expect(err.message).toMatch(/refresh/);
   });
 
   it("a 403 and a 429 keep the tokens", async () => {
@@ -260,7 +378,7 @@ describe("refresh that survives a transient failure", () => {
       queueMicrotask(() => ctl.abort());
       return new Promise<Response>(() => {});
     }) as unknown as typeof fetch;
-    const cms = createClient({ baseUrl: BASE, storage: store, fetch: f, timeoutMs: 0, signal: ctl.signal });
+    const cms = createClient({ baseUrl: BASE, storage: store, fetch: f, timeouts: { readMs: 0, writeMs: 0 }, signal: ctl.signal });
     const err = await cms.contents.list().catch((e) => e);
     expect(err).toMatchObject({ code: "aborted" });
     expect(store.get().refreshToken).toBe("r1");
@@ -268,7 +386,7 @@ describe("refresh that survives a transient failure", () => {
 
   it("a timed out request is never retried with a refresh", async () => {
     const f = hangingFetch();
-    const cms = createClient({ baseUrl: BASE, token: old, refreshToken: "r1", fetch: f, timeoutMs: 20 });
+    const cms = createClient({ baseUrl: BASE, token: old, refreshToken: "r1", fetch: f, timeouts: { readMs: 20, writeMs: 20 } });
     await expect(cms.contents.create({ contentType: "post", data: {} })).rejects.toMatchObject({ code: "timeout" });
     expect(f.calls).toHaveLength(1);
   });

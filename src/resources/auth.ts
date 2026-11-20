@@ -1,3 +1,4 @@
+import { callOpts, type CallOptions } from "../http";
 import type { Transport } from "../transport";
 import type { TokenStore } from "../auth";
 import type { AuthTokens } from "../types";
@@ -6,11 +7,11 @@ export interface AuthResource {
   /** Sign in with a username and password. Optionally scope the token to a tenant (sent as X-Tenant).
    *  Stores the returned tokens. If the deployment requires device approval, the response has
    *  `deviceApprovalRequired: true` and no tokens; collect the emailed OTP and verify it. */
-  login(username: string, password: string, tenant?: string): Promise<AuthTokens>;
+  login(username: string, password: string, tenant?: string, opts?: CallOptions): Promise<AuthTokens>;
   /** Revoke the refresh token server-side and clear the local store. */
-  logout(): Promise<void>;
+  logout(opts?: CallOptions): Promise<void>;
   /** Force a token refresh now. Normally automatic on a 401. */
-  refresh(): Promise<AuthTokens>;
+  refresh(opts?: CallOptions): Promise<AuthTokens>;
   /** Whether an access token is currently held. */
   readonly isAuthenticated: boolean;
 }
@@ -21,19 +22,20 @@ export function authResource(transport: Transport, store: TokenStore): AuthResou
       return Boolean(store.get().token);
     },
 
-    async login(username, password, tenant) {
+    async login(username, password, tenant, opts) {
       const tokens = await transport.request<AuthTokens>({
         method: "POST",
         path: "/api/auth/login",
         body: { username, password },
         headers: tenant ? { "X-Tenant": tenant } : undefined,
         noRetry: true,
+        ...callOpts(opts),
       });
       if (tokens?.token) store.set({ token: tokens.token, refreshToken: tokens.refreshToken });
       return tokens;
     },
 
-    async logout() {
+    async logout(opts) {
       const { refreshToken } = store.get();
       try {
         await transport.request<void>({
@@ -41,13 +43,14 @@ export function authResource(transport: Transport, store: TokenStore): AuthResou
           path: "/api/auth/logout",
           body: refreshToken ? { refreshToken } : {},
           noRetry: true,
+          ...callOpts(opts),
         });
       } finally {
         store.clear();
       }
     },
 
-    async refresh() {
+    async refresh(opts) {
       const { refreshToken } = store.get();
       if (!refreshToken) throw new Error("No refresh token available.");
       const tokens = await transport.request<AuthTokens>({
@@ -55,6 +58,7 @@ export function authResource(transport: Transport, store: TokenStore): AuthResou
         path: "/api/auth/refresh",
         body: { refreshToken },
         noRetry: true,
+        ...callOpts(opts),
       });
       // A refresh always rotates, so the token just sent is used and cannot be kept.
       if (!tokens.refreshToken) {

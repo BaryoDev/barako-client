@@ -11,6 +11,6 @@ if (command === "check-contract") {
     process.exitCode = code;
   });
 } else {
-  console.error("usage: barako-client check-contract <api url> [--surface admin|delivery|both]");
+  console.error("usage: barako-client check-contract <api url> [--surface admin|delivery|both] [--strict]");
   process.exitCode = 2;
 }

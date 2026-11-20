@@ -1,5 +1,5 @@
 import type { Authenticator } from "./auth";
-import { fetchText, invalidJson, resolveTimeout, toError, type CallOptions, type HttpLimits, type TextResponse } from "./http";
+import { fetchText, invalidJson, isRead, resolveTimeout, toError, type CallOptions, type HttpLimits, type TextResponse } from "./http";
 
 export interface RequestOptions extends CallOptions {
   method: string;
@@ -21,7 +21,7 @@ export class Transport {
     private readonly baseUrl: string,
     private readonly auth: Authenticator,
     private readonly fetchImpl: typeof fetch,
-    private readonly limits: HttpLimits = { timeoutMs: 0 },
+    private readonly limits: HttpLimits = { timeouts: { readMs: 0, writeMs: 0 } },
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
@@ -76,7 +76,10 @@ export class Transport {
       { method: opts.method, headers, body },
       {
         signals: [this.limits.signal, opts.signal],
-        timeoutMs: resolveTimeout(opts.timeoutMs, this.limits.timeoutMs),
+        timeoutMs: resolveTimeout(
+          opts.timeoutMs,
+          isRead(opts.method) ? this.limits.timeouts.readMs : this.limits.timeouts.writeMs,
+        ),
       },
     );
     this.limits.onResponse?.(opts.path, res.headers);

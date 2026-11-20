@@ -1,5 +1,5 @@
 import { pathSegment } from "../path";
-import type { CallOptions } from "../http";
+import { callOpts, type CallOptions } from "../http";
 import type { Transport } from "../transport";
 import { BarakoError } from "../errors";
 import type { MenuItem, Paged, PublicContent, PublicMenu } from "../types";
@@ -75,8 +75,7 @@ export function publicResource(transport: Transport, baseUrl: string): PublicRes
         method: "GET",
         path: `/api/public/${pathSegment(type)}`,
         query: query && { page: query.page, pageSize: query.pageSize },
-        signal: opts?.signal,
-        timeoutMs: opts?.timeoutMs,
+        ...callOpts(opts),
       }),
 
     bySlug: async (type, slug, opts) =>
@@ -84,8 +83,7 @@ export function publicResource(transport: Transport, baseUrl: string): PublicRes
         transport.request<PublicContent>({
           method: "GET",
           path: `/api/public/${pathSegment(type)}/${pathSegment(slug)}`,
-          signal: opts?.signal,
-          timeoutMs: opts?.timeoutMs,
+          ...callOpts(opts),
         }),
       ),
 
@@ -94,8 +92,7 @@ export function publicResource(transport: Transport, baseUrl: string): PublicRes
         transport.request<PublicContent>({
           method: "GET",
           path: `/api/public/menu/${pathSegment(slug)}`,
-          signal: opts?.signal,
-          timeoutMs: opts?.timeoutMs,
+          ...callOpts(opts),
         }),
       );
       if (!content) return null;

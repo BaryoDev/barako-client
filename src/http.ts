@@ -5,19 +5,49 @@ export interface CallOptions {
   /** Abort this call. The error has code `aborted`. */
   signal?: AbortSignal;
   /** Timeout for this call in milliseconds, covering headers and body. 0 turns it off. Overrides the
-   *  client's `timeoutMs`. */
+   *  client's read or write default for this call. */
   timeoutMs?: number;
 }
 
-/** What every request on a client shares: the config signal, the default timeout, and the contract
+/** Timeouts by kind of request, in milliseconds. 0 means no limit. Reads are GET and HEAD, every
+ *  other method is a write. */
+export interface Timeouts {
+  /** Default 30000. */
+  readMs?: number;
+  /** Default 0, no limit: a write that is cut off may still have been applied. */
+  writeMs?: number;
+}
+
+/** What every request on a client shares: the config signal, the timeouts, and the contract
  *  check. */
 export interface HttpLimits {
   signal?: AbortSignal;
-  timeoutMs: number;
+  timeouts: { readMs: number; writeMs: number };
   onResponse?: (path: string, headers: Headers) => void;
 }
 
-export const DEFAULT_TIMEOUT_MS = 30_000;
+export const DEFAULT_READ_TIMEOUT_MS = 30_000;
+export const DEFAULT_WRITE_TIMEOUT_MS = 0;
+
+export function isRead(method: string): boolean {
+  const m = method.toUpperCase();
+  return m === "GET" || m === "HEAD";
+}
+
+/** Checks the `timeouts` config and fills the defaults. Throws naming the bad field. */
+export function resolveTimeouts(timeouts?: Timeouts): { readMs: number; writeMs: number } {
+  const out = {
+    readMs: timeouts?.readMs ?? DEFAULT_READ_TIMEOUT_MS,
+    writeMs: timeouts?.writeMs ?? DEFAULT_WRITE_TIMEOUT_MS,
+  };
+  for (const field of ["readMs", "writeMs"] as const) {
+    const v = out[field];
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+      throw new Error(`createClient: timeouts.${field} must be 0 or a positive finite number of milliseconds.`);
+    }
+  }
+  return out;
+}
 
 // setTimeout treats anything above this as 1 ms.
 const MAX_TIMER_MS = 2_147_483_647;
@@ -31,7 +61,7 @@ export interface TextResponse {
   text: string;
 }
 
-/** The effective timeout: the per-call value if it is a usable number, else the client's. */
+/** The effective timeout: the per-call value if it is a usable number, else the default. */
 export function resolveTimeout(perCall: number | undefined, fallback: number): number {
   if (typeof perCall === "number" && Number.isFinite(perCall) && perCall >= 0) return perCall;
   return fallback;
@@ -51,7 +81,7 @@ export async function fetchText(
   init: { method: string; headers: Record<string, string>; body?: string },
   limits: { signals: Array<AbortSignal | undefined>; timeoutMs: number },
 ): Promise<TextResponse> {
-  const writes = init.method !== "GET" && init.method !== "HEAD";
+  const writes = !isRead(init.method);
   const unknownNote = writes ? " The outcome is unknown, the server may have applied the request." : "";
   const failure = (status: number, message: string, code: "timeout" | "aborted" | "network") =>
     new BarakoError(status, message, undefined, {
@@ -138,4 +168,9 @@ export function toError(res: TextResponse): BarakoError {
     }
   }
   return new BarakoError(res.status, message, body);
+}
+
+/** The per-call fields of a RequestOptions, taken from a CallOptions. */
+export function callOpts(opts?: CallOptions): CallOptions {
+  return { signal: opts?.signal, timeoutMs: opts?.timeoutMs };
 }

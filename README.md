@@ -145,20 +145,31 @@ try {
 
 ### Timeouts and aborting
 
-Every request has a timeout, 30000 ms by default, that covers the headers and the body. Set
-`timeoutMs` on the client, or `0` to turn it off. A request that runs out rejects with a
-`BarakoError` that has `code: "timeout"`.
+Reads (GET and HEAD) stop after 30000 ms by default. Writes (every other method) have no limit by
+default, because a write that is cut off may still have been applied. The timeout covers the headers
+and the body. Set `timeouts` on the client, where each value is `0` (no limit) or a positive number. A
+request that runs out rejects with a `BarakoError` that has `code: "timeout"`.
 
 ```ts
-const cms = createClient({ baseUrl, timeoutMs: 10_000, signal: appController.signal });
+const cms = createClient({
+  baseUrl,
+  timeouts: { readMs: 10_000, writeMs: 120_000 },
+  signal: appController.signal,
+});
 
-// per call, on the public resource (list, bySlug, menu)
+// per call: the last argument of every method on every resource
 await cms.public.list("post", { pageSize: 100 }, { signal, timeoutMs: 5_000 });
+await cms.contents.create(input, { timeoutMs: 600_000 }); // a slow write
 ```
 
-`signal` on the client aborts every request. A per-call `signal` or `timeoutMs` is the last
-argument of the `cms.public` methods. The other resources take none yet. An aborted request has
+`signal` on the client aborts every request. Every method on every resource takes a trailing
+`{ signal, timeoutMs }`. A per-call `timeoutMs` replaces the read or write default for that call,
+and `0` turns it off. On `contents.create` and `contents.update` these fields sit in the existing
+options object next to `dryRun`, `idempotencyKey` and `ifMatch`. An aborted request has
 `code: "aborted"`.
+
+The token refresh is a POST, but it uses `readMs`. Every request that got a 401 waits on that one
+refresh, so a hung refresh with no limit would hang them all.
 
 The client never retries after a timeout or a network error. The one retry it does is a request
 that got a 401 after the token was refreshed. A write (anything but GET and HEAD) that times out or
@@ -171,7 +182,7 @@ Check before you send it again.
 
 | `code` | `status` | When |
 | --- | --- | --- |
-| `timeout` | 0 | The request ran past `timeoutMs` |
+| `timeout` | 0 | The request ran past its timeout |
 | `aborted` | 0 | A `signal` fired |
 | `network` | 0 | DNS, connection reset, or another fetch failure |
 | `invalid-json` | the response's | A 2xx answer whose body was not JSON, such as a proxy page |
@@ -199,14 +210,14 @@ const cms = createClient({
 
 ### check-contract
 
-`barako-client check-contract <api url> [--surface admin|delivery|both]` makes one `GET <url>/api/meta`
+`barako-client check-contract <api url> [--surface admin|delivery|both] [--strict]` makes one `GET <url>/api/meta`
 with no auth and compares the headers with the range of the client version you installed. The
 default surface is `both`. It prints one line and exits:
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | In range |
-| 1 | Outside the range, or the header it needs is missing or not a whole number |
+| 0 | In range, or newer than this client (the line says "newer than this client") |
+| 1 | Older than the client's minimum, or the header it needs is missing or not a whole number. With `--strict`, also newer than the client's maximum |
 | 2 | The API could not be reached (network, DNS, timeout), or the arguments are wrong |
 
 In CI, run it before the build so a breaking API change fails there and not in production:
@@ -226,7 +237,7 @@ In CI, run it before the build so a breaking API change fails there and not in p
 | `tenant` | Force the X-Tenant for JWT auth (otherwise read from the token) |
 | `storage` | Where JWT tokens live: `memoryStore()` (default) or `browserStore()` |
 | `fetch` | Custom fetch, for interception or a runtime without a global one |
-| `timeoutMs` | Per request, headers and body. Default 30000, `0` for none |
+| `timeouts` | `{ readMs, writeMs }`, headers and body. Reads default to 30000, writes to 0 (no limit) |
 | `signal` | An `AbortSignal` that aborts every request of the client |
 | `onContractMismatch` | Called once per surface when the API's contract is outside the supported range |
 

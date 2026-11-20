@@ -1,7 +1,7 @@
 import { BarakoError } from "./errors";
 import {
   SUPPORTED_CONTRACT,
-  isInRange,
+  compareToRange,
   readContractVersion,
   type ContractSurface,
 } from "./contract";
@@ -15,7 +15,7 @@ export interface CheckContractDeps {
   timeoutMs?: number;
 }
 
-const USAGE = "usage: barako-client check-contract <api url> [--surface admin|delivery|both]";
+const USAGE = "usage: barako-client check-contract <api url> [--surface admin|delivery|both] [--strict]";
 
 /** Only printable ASCII and a short length, so nothing from the network can shape the output. */
 function plain(text: string): string {
@@ -23,21 +23,25 @@ function plain(text: string): string {
 }
 
 /**
- * `barako-client check-contract <api url> [--surface admin|delivery|both]`.
+ * `barako-client check-contract <api url> [--surface admin|delivery|both] [--strict]`.
  *
  * One GET to `<url>/api/meta`, no auth, headers read whatever the status. Returns the exit code:
- * 0 in range, 1 outside or the header it needs is missing, 2 the API cannot be reached (or the
- * arguments are wrong).
+ * 0 in range or newer than this client (a newer API is not proof of a break, and the run-time
+ * warning covers it), 1 older than the minimum or the header it needs is missing, or newer with
+ * `--strict`, 2 the API cannot be reached or the arguments are wrong.
  */
 export async function checkContract(argv: string[], deps: CheckContractDeps): Promise<number> {
   let url: string | undefined;
   let surface = "both";
+  let strict = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--surface") {
       surface = argv[++i] ?? "";
     } else if (arg.startsWith("--surface=")) {
       surface = arg.slice("--surface=".length);
+    } else if (arg === "--strict") {
+      strict = true;
     } else if (!arg.startsWith("-") && url === undefined) {
       url = arg;
     } else {
@@ -66,7 +70,8 @@ export async function checkContract(argv: string[], deps: CheckContractDeps): Pr
 
   const surfaces: ContractSurface[] = surface === "both" ? ["admin", "delivery"] : [surface as ContractSurface];
   let missing = false;
-  let outside = false;
+  let older = false;
+  let newer = false;
   const parts = surfaces.map((s) => {
     const { min, max } = SUPPORTED_CONTRACT[s];
     const version = readContractVersion(res.headers, s);
@@ -74,11 +79,19 @@ export async function checkContract(argv: string[], deps: CheckContractDeps): Pr
       missing = true;
       return `${s} missing (supported ${min} to ${max})`;
     }
-    if (!isInRange(s, version)) outside = true;
+    const where = compareToRange(s, version);
+    if (where === "older") older = true;
+    if (where === "newer") newer = true;
     return `${s} ${version} (supported ${min} to ${max})`;
   });
 
-  const verdict = missing ? "missing header" : outside ? "outside range" : "in range";
+  const verdict = missing
+    ? "missing header"
+    : older
+      ? "older than this client"
+      : newer
+        ? "newer than this client"
+        : "in range";
   deps.stdout(`check-contract: ${verdict}. ${parts.join(", ")}`);
-  return missing || outside ? 1 : 0;
+  return missing || older || (newer && strict) ? 1 : 0;
 }

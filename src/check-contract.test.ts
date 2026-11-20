@@ -38,29 +38,67 @@ describe("check-contract", () => {
     expect(r.calls[0].init.headers).toEqual({});
   });
 
-  it("exits 1 when admin is outside the range", async () => {
+  it("a newer admin number exits 0 and the line says newer", async () => {
     const r = await run(
       ["https://cms.test"],
       answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "10" }),
     );
-    expect(r.code).toBe(1);
-    expect(r.out[0]).toContain("outside range");
+    expect(r.code).toBe(0);
+    expect(r.out[0]).toContain("newer than this client");
     expect(r.out[0]).toContain("admin 17");
   });
 
-  it("exits 1 when delivery is outside the range", async () => {
+  it("a newer delivery number exits 0 and the line says newer", async () => {
     const r = await run(
       ["https://cms.test"],
       answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "11" }),
     );
-    expect(r.code).toBe(1);
+    expect(r.code).toBe(0);
+    expect(r.out[0]).toContain("newer than this client");
     expect(r.out[0]).toContain("delivery 11");
   });
 
-  it("exits 1 when the header it needs is missing", async () => {
-    const r = await run(["https://cms.test"], answer({}));
+  it("--strict makes a newer API exit 1", async () => {
+    const r = await run(
+      ["https://cms.test", "--strict"],
+      answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "10" }),
+    );
     expect(r.code).toBe(1);
-    expect(r.out[0]).toContain("missing");
+    expect(r.out[0]).toContain("newer than this client");
+  });
+
+  it("--strict leaves an in-range API at exit 0", async () => {
+    const r = await run(
+      ["https://cms.test", "--strict"],
+      answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "10" }),
+    );
+    expect(r.code).toBe(0);
+  });
+
+  it("an API older than the minimum exits 1", async () => {
+    const r = await run(
+      ["https://cms.test"],
+      answer({ "X-Api-Contract-Version": "0", "X-Delivery-Contract-Version": "10" }),
+    );
+    expect(r.code).toBe(1);
+    expect(r.out[0]).toContain("older than this client");
+  });
+
+  it("older wins over newer in the verdict", async () => {
+    const r = await run(
+      ["https://cms.test"],
+      answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "0" }),
+    );
+    expect(r.code).toBe(1);
+    expect(r.out[0]).toContain("older than this client");
+  });
+
+  it("exits 1 when the header it needs is missing", async () => {
+    for (const argv of [["https://cms.test"], ["https://cms.test", "--strict"]]) {
+      const r = await run(argv, answer({}));
+      expect(r.code).toBe(1);
+      expect(r.out[0]).toContain("missing");
+    }
   });
 
   it("a value that is not a whole number counts as missing", async () => {

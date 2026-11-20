@@ -111,7 +111,7 @@ export class JwtAuthenticator implements Authenticator {
     private readonly baseUrl: string,
     private readonly fetchImpl: typeof fetch,
     private readonly tenantOverride?: string,
-    private readonly limits: HttpLimits = { timeoutMs: 0 },
+    private readonly limits: HttpLimits = { timeouts: { readMs: 0, writeMs: 0 } },
   ) {}
 
   authHeader() {
@@ -151,7 +151,9 @@ export class JwtAuthenticator implements Authenticator {
           },
           body: JSON.stringify({ refreshToken }),
         },
-        { signals: [this.limits.signal], timeoutMs: this.limits.timeoutMs },
+        // The refresh is a POST but takes the read timeout, not the write one. Every request that
+        // got a 401 waits on this one refresh, so a hung refresh with no limit would hang them all.
+        { signals: [this.limits.signal], timeoutMs: this.limits.timeouts.readMs },
       );
     } catch (e) {
       // The tokens stay: a timeout or a network error says nothing about them.

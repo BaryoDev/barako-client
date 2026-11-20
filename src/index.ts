@@ -6,7 +6,7 @@ export type { BarakoErrorCode } from "./errors";
 
 export { SUPPORTED_CONTRACT } from "./contract";
 export type { ContractMismatch, ContractSurface } from "./contract";
-export type { CallOptions } from "./http";
+export type { CallOptions, Timeouts } from "./http";
 
 export { memoryStore, browserStore, tenantOfToken } from "./auth";
 export type { TokenStore, Authenticator } from "./auth";

@@ -44,6 +44,14 @@ export function isInRange(surface: ContractSurface, version: number): boolean {
   return version >= min && version <= max;
 }
 
+/** Where a number sits against this client's range for a surface. */
+export function compareToRange(surface: ContractSurface, version: number): "older" | "newer" | "in" {
+  const { min, max } = SUPPORTED_CONTRACT[surface];
+  if (version < min) return "older";
+  if (version > max) return "newer";
+  return "in";
+}
+
 /** Checks each response against the range. A mismatch is reported once per surface for the life of
  *  the monitor, through `onMismatch` or, when none is given, `console.warn`. It never throws. */
 export function createContractMonitor(onMismatch?: (info: ContractMismatch) => void) {
