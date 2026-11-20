@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `me.switch()` sends the tenant as `tenant`, the name barakoCMS reads since 4.6, and still as `club` for older APIs.
+
 ## 0.5.0
 
 - `ContentStatus` is now a string enum whose values are names ("Draft", "Published", "Archived", "Scheduled"), to match the API, which sends enums as names. Before, `entry.status === ContentStatus.Published` was always false.
