@@ -2,6 +2,11 @@ export { createClient } from "./client";
 export type { ClientConfig, BarakoClient } from "./client";
 
 export { BarakoError } from "./errors";
+export type { BarakoErrorCode } from "./errors";
+
+export { SUPPORTED_CONTRACT } from "./contract";
+export type { ContractMismatch, ContractSurface } from "./contract";
+export type { CallOptions, Timeouts } from "./http";
 
 export { memoryStore, browserStore, tenantOfToken } from "./auth";
 export type { TokenStore, Authenticator } from "./auth";

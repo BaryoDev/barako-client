@@ -12,12 +12,12 @@ Framework-agnostic and isomorphic: it runs in Node, the browser, and edge runtim
 
 ## Compatibility
 
-This version works with barakoCMS 4.0 through 5.0. The admin routes are on API contract 1 to 8,
-sent as `X-Api-Contract-Version`. Since 4.6, public delivery (`cms.public`) has its own number,
-delivery contract 6 to 8, sent as `X-Delivery-Contract-Version`; before 4.6 it shared the admin
-header. Contracts 5 to 8 changed nothing on the routes and shapes this client uses; that comes from
-reading the barakoCMS changelog and source, not from a run against a 5.0 server. The client reads
-neither header, so check the one that applies when you move to a barakoCMS release that raises it.
+This version works with API contract 1 to 16 on the admin routes (`X-Api-Contract-Version`) and 1
+to 10 on public delivery (`cms.public`, `X-Delivery-Contract-Version`). The numbers are exported as
+`SUPPORTED_CONTRACT`. An API from before the delivery split sends only the admin header, and then
+that number is also the delivery number. The client reads both headers on every response, including
+errors, and warns when one is outside its range (see "Contract range" below). The barakoCMS release
+this matches comes from reading its changelog and source, not from a run against every release.
 Node 18 or later.
 
 Some 5.0 writes are stricter: `POST` and `PUT` on contents answer 400 for a field name the content
@@ -143,6 +143,117 @@ try {
 }
 ```
 
+### Timeouts and aborting
+
+Reads (GET and HEAD) stop after 30000 ms by default. Writes (every other method) have no limit by
+default, because a write that is cut off may still have been applied. The timeout covers the headers
+and the body. Set `timeouts` on the client, where each value is `0` (no limit) or a positive number. A
+request that runs out rejects with a `BarakoError` that has `code: "timeout"`.
+
+```ts
+const cms = createClient({
+  baseUrl,
+  timeouts: { readMs: 10_000, writeMs: 120_000 },
+  signal: appController.signal,
+});
+
+// per call: the last argument of every method that makes a request
+await cms.public.list("post", { pageSize: 100 }, { signal, timeoutMs: 5_000 });
+await cms.contents.create(input, { timeoutMs: 600_000 }); // a slow write
+```
+
+`signal` on the client aborts every request. Every method that makes a request takes a trailing
+`{ signal, timeoutMs }`. The two exceptions are `public.fileUrl` and `auth.isAuthenticated`, which
+build a string or read the store and send nothing. A per-call `timeoutMs` replaces the read or write
+default for that call, and `0` turns it off. A value config would reject (negative, `NaN`,
+`Infinity`, not a number) throws before any request is sent. On `contents.create` and `contents.update` these fields sit in the existing
+options object next to `dryRun`, `idempotencyKey` and `ifMatch`. An aborted request has
+`code: "aborted"`.
+
+Calls that save nothing count as reads, whatever their method, and use `readMs`: `auth.login`,
+`auth.logout`, `me.switch`, and `contents.create` and `contents.update` with `dryRun`. A dry run that
+times out does not say the outcome is unknown.
+
+The token refresh is a POST, but it uses `readMs`. Every request that got a 401 waits on that one
+refresh, so a hung refresh with no limit would hang them all. The refresh is shared, so it runs on
+the client's limits. Your call's own `signal` and `timeoutMs` only bound how long that call waits for
+it: an abort or a timeout there rejects your call and leaves the refresh running for the others.
+`auth.refresh()` takes `readMs` too (a per-call `timeoutMs` wins), and a refresh that times out says
+the outcome is unknown, because the server may already have rotated the token.
+
+`timeoutMs` counts per attempt, not for the whole call. A call that gets a 401 can wait up to
+`timeoutMs` for the refresh and then up to `timeoutMs` for the retry, on top of the first attempt.
+The largest timeout is 2147483647 ms (about 24.8 days); a larger one throws, in the config and per call.
+
+Methods that read every page (`contentTypes.list`, `contents.history`, `me.tenants`) apply `timeoutMs`
+to each page, not to the whole call. The `signal` stops the whole loop. A list stops with an error
+after 1000 pages, so a server that never ends its list cannot keep it running forever.
+
+The client never retries after a timeout or a network error. The one retry it does is a request
+that got a 401 after the token was refreshed. A write (anything but GET and HEAD) that times out or
+loses its connection may still have been applied, so the error has `outcomeUnknown: true` and says so.
+So does a write you abort after it was sent. An abort before the request was sent does not. Check
+before you send it again.
+
+### Error codes
+
+`BarakoError` has an optional `code`:
+
+| `code` | `status` | When |
+| --- | --- | --- |
+| `timeout` | 0 | The request ran past its timeout |
+| `aborted` | 0 | A `signal` fired |
+| `network` | 0 | DNS, connection reset, or another fetch failure |
+| `invalid-json` | the response's | A 2xx answer whose body was not JSON, such as a proxy page |
+
+An error from a non-JSON body (a proxy's HTML page) has its `message` and `body` cut to 500
+characters. A JSON error body stays as parsed. The reason in a `network` error is cut to 500
+characters on one line, and a `scheme://user:pass@` in it is shown as `scheme://***@`.
+
+A failed token refresh signs you out only when the API answers 400 or 401 to it. A 5xx, a 403, a
+429, a timeout or a network error keeps both tokens, and the original request rejects with that
+failure so you can try again. The message starts with "Token refresh failed." and the status is the
+refresh's own. A refresh that answers 200 without a non-empty `token` is an `invalid-json` error and
+keeps the tokens.
+
+`createClient` throws when `baseUrl` has a user or password. Use `apiKey` or `auth.login`.
+
+Known limit: a refresh that times out after the server already rotated the token leaves the client
+holding the old one. What happens on the next refresh is up to the server's replay rule.
+
+### Contract range
+
+When a response carries a contract number outside the range above, the client logs one
+`console.warn` per surface (`admin`, `delivery`). Pass `onContractMismatch` to handle it yourself,
+which replaces the warning. It is called once per surface and never changes a request's result. A
+missing or non-numeric header gives no warning.
+
+```ts
+const cms = createClient({
+  baseUrl,
+  onContractMismatch: ({ surface, apiVersion, min, max }) => report(surface, apiVersion, min, max),
+});
+```
+
+### check-contract
+
+`barako-client check-contract <api url> [--surface admin|delivery|both] [--strict]` makes one `GET <url>/api/meta`
+(the URL's path is kept, a query or fragment is dropped) with no auth and compares the headers with the range of the client version you installed. The
+default surface is `both`. It prints one line and exits:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | In range, or newer than this client (the line says "newer than this client") |
+| 1 | Older than the client's minimum, or the header it needs is missing or not a whole number. With `--strict`, also newer than the client's maximum |
+| 2 | The API could not be reached (network, DNS, timeout) or answered 5xx with no contract header, or the arguments are wrong. A URL with a user or password is a bad argument |
+
+In CI, run it before the build so a breaking API change fails there and not in production:
+
+```yaml
+- run: npm ci
+- run: npx barako-client check-contract https://your-cms.example.com/barakocms-api --strict
+```
+
 ### Config
 
 | Option | Purpose |
@@ -153,6 +264,9 @@ try {
 | `tenant` | Force the X-Tenant for JWT auth (otherwise read from the token) |
 | `storage` | Where JWT tokens live: `memoryStore()` (default) or `browserStore()` |
 | `fetch` | Custom fetch, for interception or a runtime without a global one |
+| `timeouts` | `{ readMs, writeMs }`, headers and body. Reads default to 30000, writes to 0 (no limit) |
+| `signal` | An `AbortSignal` that aborts every request of the client |
+| `onContractMismatch` | Called once per surface when the API's contract is outside the supported range |
 
 ## License
 

@@ -5,6 +5,8 @@ import {
   type Authenticator,
   type TokenStore,
 } from "./auth";
+import { createContractMonitor, type ContractMismatch } from "./contract";
+import { resolveTimeouts, type HttpLimits, type Timeouts } from "./http";
 import { Transport } from "./transport";
 import { authResource, type AuthResource } from "./resources/auth";
 import { meResource, type MeResource } from "./resources/me";
@@ -28,6 +30,17 @@ export interface ClientConfig {
   storage?: TokenStore;
   /** Custom fetch (for Node <18, tests, or interception). Defaults to the global fetch. */
   fetch?: typeof fetch;
+  /** Timeouts in milliseconds, covering headers and body. Reads (GET, HEAD) default to 30000. Writes
+   *  (every other method) default to 0, no limit. 0 turns one off. A request that runs out gets a
+   *  BarakoError with code `timeout`. The token refresh counts as a read. */
+  timeouts?: Timeouts;
+  /** Aborts every request of this client when it fires. A request stopped this way gets a
+   *  BarakoError with code `aborted`. */
+  signal?: AbortSignal;
+  /** Called once per surface (`admin`, `delivery`) when the API's contract version is outside the
+   *  range this client supports. Without it the client logs one `console.warn`. It never changes
+   *  the result of a request. */
+  onContractMismatch?: (info: ContractMismatch) => void;
 }
 
 export interface BarakoClient {
@@ -39,6 +52,16 @@ export interface BarakoClient {
   pages: PagesResource;
   /** Anonymous public delivery for a website frontend (no auth needed). */
   public: PublicResource;
+}
+
+/** True when the URL parses and carries a user or password. A relative URL has neither. */
+function hasCredentials(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.username !== "" || u.password !== "";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -56,19 +79,32 @@ export interface BarakoClient {
  */
 export function createClient(config: ClientConfig): BarakoClient {
   if (!config.baseUrl) throw new Error("createClient: baseUrl is required.");
+  if (hasCredentials(config.baseUrl)) {
+    throw new Error(
+      "createClient: baseUrl must not contain a user or password. Use apiKey, or sign in with auth.login.",
+    );
+  }
+  const baseUrl = config.baseUrl.replace(/\/+$/, "");
   const fetchImpl = config.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
     throw new Error("createClient: no global fetch here, pass config.fetch.");
   }
+
+  const timeouts = resolveTimeouts(config.timeouts);
+  const limits: HttpLimits = {
+    timeouts,
+    signal: config.signal,
+    onResponse: createContractMonitor(config.onContractMismatch),
+  };
 
   const store =
     config.storage ?? memoryStore({ token: config.token, refreshToken: config.refreshToken });
 
   const auth: Authenticator = config.apiKey
     ? new ApiKeyAuthenticator(config.apiKey)
-    : new JwtAuthenticator(store, config.baseUrl, fetchImpl, config.tenant);
+    : new JwtAuthenticator(store, baseUrl, fetchImpl, config.tenant, limits);
 
-  const transport = new Transport(config.baseUrl, auth, fetchImpl);
+  const transport = new Transport(config.baseUrl, auth, fetchImpl, limits);
 
   return {
     auth: authResource(transport, store),

@@ -1,4 +1,5 @@
 import { pathSegment } from "../path";
+import { callOpts, type CallOptions } from "../http";
 import type { Transport } from "../transport";
 import { BarakoError } from "../errors";
 import type { MenuItem, Paged, PublicContent, PublicMenu } from "../types";
@@ -9,20 +10,22 @@ export interface PublicListQuery {
 }
 
 /**
+ * Every method takes an optional trailing `{ signal, timeoutMs }` for that call.
+ *
  * The anonymous public delivery surface for a website frontend: published content by type or slug,
  * navigation menus, and public file URLs. No auth is needed; set `tenant` on the client to scope a
  * multi-tenant deployment to one site.
  */
 export interface PublicResource {
   /** Published entries of a content type, newest first. */
-  list(type: string, query?: PublicListQuery): Promise<Paged<PublicContent>>;
+  list(type: string, query?: PublicListQuery, opts?: CallOptions): Promise<Paged<PublicContent>>;
   /** A single published entry by its slug, or null if there is none. */
-  bySlug(type: string, slug: string): Promise<PublicContent | null>;
+  bySlug(type: string, slug: string, opts?: CallOptions): Promise<PublicContent | null>;
   /**
    * A navigation menu by slug (e.g. "main", "footer"), or null if there is none. A menu is just a
    * `menu` content type read through public delivery, so it stays pluggable like any other content.
    */
-  menu(slug: string): Promise<PublicMenu | null>;
+  menu(slug: string, opts?: CallOptions): Promise<PublicMenu | null>;
   /** The public URL for a file id, to use directly as an `<img>` src. */
   fileUrl(id: string): string;
 }
@@ -67,26 +70,29 @@ export function publicResource(transport: Transport, baseUrl: string): PublicRes
   };
 
   return {
-    list: async (type, query) =>
+    list: async (type, query, opts) =>
       transport.request<Paged<PublicContent>>({
         method: "GET",
         path: `/api/public/${pathSegment(type)}`,
         query: query && { page: query.page, pageSize: query.pageSize },
+        ...callOpts(opts),
       }),
 
-    bySlug: async (type, slug) =>
+    bySlug: async (type, slug, opts) =>
       orNull(
         transport.request<PublicContent>({
           method: "GET",
           path: `/api/public/${pathSegment(type)}/${pathSegment(slug)}`,
+          ...callOpts(opts),
         }),
       ),
 
-    menu: async (slug) => {
+    menu: async (slug, opts) => {
       const content = await orNull(
         transport.request<PublicContent>({
           method: "GET",
           path: `/api/public/menu/${pathSegment(slug)}`,
+          ...callOpts(opts),
         }),
       );
       if (!content) return null;

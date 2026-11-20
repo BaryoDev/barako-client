@@ -1,3 +1,5 @@
+import { BarakoError } from "./errors";
+import { fetchText, invalidJson, toError, waitBounded, type CallOptions, type HttpLimits } from "./http";
 import type { AuthTokens } from "./types";
 
 /** Where JWT tokens are kept between requests. Swap in a browser (localStorage) or persistent store. */
@@ -78,8 +80,11 @@ export interface Authenticator {
   authHeader(): string | undefined;
   /** `X-Tenant` header to send, or undefined. */
   tenantHeader(): string | undefined;
-  /** Called on a 401. Return true if the caller should retry the request (e.g. after a refresh). */
-  recover(): Promise<boolean>;
+  /** Called on a 401, with the failed call's own signal and timeoutMs, which bound how long that
+   *  caller waits. Return true if the caller should retry the request (e.g. after a refresh).
+   *  Rejects with a BarakoError when the recovery itself failed in a way that says nothing about the
+   *  credential (a 5xx, a timeout), so the caller sees that failure and the tokens stay. */
+  recover(call?: CallOptions): Promise<boolean>;
 }
 
 /** API-key auth: a static bearer token, no refresh. The server derives the tenant from the key, so
@@ -92,7 +97,7 @@ export class ApiKeyAuthenticator implements Authenticator {
   tenantHeader() {
     return undefined;
   }
-  async recover() {
+  async recover(_call?: CallOptions) {
     return false; // a bad/expired key can't be refreshed
   }
 }
@@ -107,6 +112,7 @@ export class JwtAuthenticator implements Authenticator {
     private readonly baseUrl: string,
     private readonly fetchImpl: typeof fetch,
     private readonly tenantOverride?: string,
+    private readonly limits: HttpLimits = { timeouts: { readMs: 0, writeMs: 0 } },
   ) {}
 
   authHeader() {
@@ -118,12 +124,14 @@ export class JwtAuthenticator implements Authenticator {
     return this.tenantOverride ?? tenantOfToken(this.store.get().token) ?? undefined;
   }
 
-  async recover() {
+  async recover(call?: CallOptions) {
     // Concurrent 401s share one refresh so we don't trip the server's refresh-token reuse detection.
     this.refreshing ??= this.doRefresh().finally(() => {
       this.refreshing = undefined;
     });
-    return this.refreshing;
+    // The refresh runs on the client's limits, so one caller leaving does not cancel it for the
+    // others. This caller's own signal and timeoutMs only bound how long it waits.
+    return waitBounded(this.refreshing, { signals: [call?.signal], timeoutMs: call?.timeoutMs }, "Token refresh failed.");
   }
 
   private async doRefresh(): Promise<boolean> {
@@ -132,22 +140,69 @@ export class JwtAuthenticator implements Authenticator {
 
     // Carry the tenant into the refresh, or the new token silently reverts to the default tenant.
     const tenant = this.tenantOverride ?? tenantOfToken(token) ?? undefined;
-    const res = await this.fetchImpl(`${this.baseUrl}/api/auth/refresh`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(tenant ? { "X-Tenant": tenant } : {}),
-      },
-      body: JSON.stringify({ refreshToken }),
-    });
+    const path = "/api/auth/refresh";
+    let res;
+    try {
+      res = await fetchText(
+        this.fetchImpl,
+        `${this.baseUrl}${path}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(tenant ? { "X-Tenant": tenant } : {}),
+          },
+          body: JSON.stringify({ refreshToken }),
+        },
+        // The refresh is a POST but takes the read timeout, not the write one. Every request that
+        // got a 401 waits on this one refresh, so a hung refresh with no limit would hang them all.
+        { signals: [this.limits.signal], timeoutMs: this.limits.timeouts.readMs },
+      );
+    } catch (e) {
+      // The tokens stay: a timeout or a network error says nothing about them.
+      if (e instanceof BarakoError) {
+        throw new BarakoError(e.status, `Token refresh failed. ${e.message}`, e.body, {
+          code: e.code,
+          outcomeUnknown: e.outcomeUnknown,
+        });
+      }
+      throw e;
+    }
+    this.limits.onResponse?.(path, res.headers);
 
-    if (!res.ok) {
-      this.store.clear();
+    // A logout, a login or a tenant switch during the refresh changed the session. This answer is for
+    // the old one, so it must not clear or overwrite the current one. The caller gets false.
+    const sessionChanged = () => {
+      const now = this.store.get();
+      return now.refreshToken !== refreshToken || now.token !== token;
+    };
+
+    // Only a 400 or 401 says the refresh token is bad. Anything else is the server or the network
+    // having a bad moment, and signing the user out for it would lose a good session.
+    if (res.status === 400 || res.status === 401) {
+      if (!sessionChanged()) this.store.clear();
       return false;
     }
-    const data = (await res.json()) as AuthTokens;
+    if (!res.ok) {
+      // Keep the refresh's status, but say it was the refresh, so a 403 here is not read as the
+      // caller's own request being forbidden.
+      const e = toError(res);
+      throw new BarakoError(e.status, `Token refresh failed. ${e.message}`, e.body);
+    }
+
+    let data: AuthTokens;
+    try {
+      data = JSON.parse(res.text) as AuthTokens;
+    } catch {
+      throw invalidJson(res.status, res.text);
+    }
+    if (!data || typeof data !== "object") throw invalidJson(res.status, res.text);
+    // A 200 with no access token is not an answer to use. The tokens stay, and the body is left out
+    // of the error because it holds the new refresh token.
+    if (typeof data.token !== "string" || !data.token) throw invalidJson(res.status, "");
     // A refresh always rotates, so the token just sent is used. Keeping it would make the next
     // refresh a replay, which revokes every session the user has.
+    if (sessionChanged()) return false;
     if (!data.refreshToken) {
       this.store.clear();
       return false;
