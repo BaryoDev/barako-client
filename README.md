@@ -12,12 +12,12 @@ Framework-agnostic and isomorphic: it runs in Node, the browser, and edge runtim
 
 ## Compatibility
 
-This version works with barakoCMS 4.0 through 5.0. The admin routes are on API contract 1 to 8,
-sent as `X-Api-Contract-Version`. Since 4.6, public delivery (`cms.public`) has its own number,
-delivery contract 6 to 8, sent as `X-Delivery-Contract-Version`; before 4.6 it shared the admin
-header. Contracts 5 to 8 changed nothing on the routes and shapes this client uses; that comes from
-reading the barakoCMS changelog and source, not from a run against a 5.0 server. The client reads
-neither header, so check the one that applies when you move to a barakoCMS release that raises it.
+This version works with API contract 1 to 16 on the admin routes (`X-Api-Contract-Version`) and 1
+to 10 on public delivery (`cms.public`, `X-Delivery-Contract-Version`). The numbers are exported as
+`SUPPORTED_CONTRACT`. An API from before the delivery split sends only the admin header, and then
+that number is also the delivery number. The client reads both headers on every response, including
+errors, and warns when one is outside its range (see "Contract range" below). The barakoCMS release
+this matches comes from reading its changelog and source, not from a run against every release.
 Node 18 or later.
 
 Some 5.0 writes are stricter: `POST` and `PUT` on contents answer 400 for a field name the content
@@ -143,6 +143,79 @@ try {
 }
 ```
 
+### Timeouts and aborting
+
+Every request has a timeout, 30000 ms by default, that covers the headers and the body. Set
+`timeoutMs` on the client, or `0` to turn it off. A request that runs out rejects with a
+`BarakoError` that has `code: "timeout"`.
+
+```ts
+const cms = createClient({ baseUrl, timeoutMs: 10_000, signal: appController.signal });
+
+// per call, on the public resource (list, bySlug, menu)
+await cms.public.list("post", { pageSize: 100 }, { signal, timeoutMs: 5_000 });
+```
+
+`signal` on the client aborts every request. A per-call `signal` or `timeoutMs` is the last
+argument of the `cms.public` methods. The other resources take none yet. An aborted request has
+`code: "aborted"`.
+
+The client never retries after a timeout or a network error. The one retry it does is a request
+that got a 401 after the token was refreshed. A write (anything but GET and HEAD) that times out or
+loses its connection may still have been applied, so the error has `outcomeUnknown: true` and says so.
+Check before you send it again.
+
+### Error codes
+
+`BarakoError` has an optional `code`:
+
+| `code` | `status` | When |
+| --- | --- | --- |
+| `timeout` | 0 | The request ran past `timeoutMs` |
+| `aborted` | 0 | A `signal` fired |
+| `network` | 0 | DNS, connection reset, or another fetch failure |
+| `invalid-json` | the response's | A 2xx answer whose body was not JSON, such as a proxy page |
+
+An error from a non-JSON body (a proxy's HTML page) has its `message` and `body` cut to 500
+characters. A JSON error body stays as parsed.
+
+A failed token refresh signs you out only when the API answers 400 or 401 to it. A 5xx, a 403, a
+429, a timeout or a network error keeps both tokens, and the original request rejects with that
+failure so you can try again.
+
+### Contract range
+
+When a response carries a contract number outside the range above, the client logs one
+`console.warn` per surface (`admin`, `delivery`). Pass `onContractMismatch` to handle it yourself,
+which replaces the warning. It is called once per surface and never changes a request's result. A
+missing or non-numeric header gives no warning.
+
+```ts
+const cms = createClient({
+  baseUrl,
+  onContractMismatch: ({ surface, apiVersion, min, max }) => report(surface, apiVersion, min, max),
+});
+```
+
+### check-contract
+
+`barako-client check-contract <api url> [--surface admin|delivery|both]` makes one `GET <url>/api/meta`
+with no auth and compares the headers with the range of the client version you installed. The
+default surface is `both`. It prints one line and exits:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | In range |
+| 1 | Outside the range, or the header it needs is missing or not a whole number |
+| 2 | The API could not be reached (network, DNS, timeout), or the arguments are wrong |
+
+In CI, run it before the build so a breaking API change fails there and not in production:
+
+```yaml
+- run: npm ci
+- run: npx barako-client check-contract https://your-cms.example.com/barakocms-api
+```
+
 ### Config
 
 | Option | Purpose |
@@ -153,6 +226,9 @@ try {
 | `tenant` | Force the X-Tenant for JWT auth (otherwise read from the token) |
 | `storage` | Where JWT tokens live: `memoryStore()` (default) or `browserStore()` |
 | `fetch` | Custom fetch, for interception or a runtime without a global one |
+| `timeoutMs` | Per request, headers and body. Default 30000, `0` for none |
+| `signal` | An `AbortSignal` that aborts every request of the client |
+| `onContractMismatch` | Called once per surface when the API's contract is outside the supported range |
 
 ## License
 

@@ -23,6 +23,9 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "barako-client": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -35,11 +38,12 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup && npm run build -w cli",
+    "build:lib": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\" && tsup",
+    "build": "npm run build:lib && npm run build -w cli",
     "test": "vitest run src && npm test -w cli",
     "test:int": "npm run build && vitest run --config cli/vitest.int.config.ts",
     "typecheck": "tsc --noEmit && npm run typecheck -w cli",
-    "prepublishOnly": "tsup"
+    "prepublishOnly": "npm run build:lib"
   },
   "devDependencies": {
     "tsup": "^8.3.0",

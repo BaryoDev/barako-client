@@ -1,7 +1,7 @@
 import type { Authenticator } from "./auth";
-import { BarakoError } from "./errors";
+import { fetchText, invalidJson, resolveTimeout, toError, type CallOptions, type HttpLimits, type TextResponse } from "./http";
 
-export interface RequestOptions {
+export interface RequestOptions extends CallOptions {
   method: string;
   path: string;
   query?: Record<string, string | number | boolean | undefined>;
@@ -14,12 +14,14 @@ export interface RequestOptions {
 
 /** The HTTP layer: builds requests, attaches auth + tenant headers, retries once after a recovered
  *  401, and turns non-2xx into a typed BarakoError. Uses the global fetch (Node 18+, browsers, edge)
- *  unless a custom one is supplied. */
+ *  unless a custom one is supplied. Every request is bounded by a timeout and can be aborted. It
+ *  never retries after a timeout or a network error. */
 export class Transport {
   constructor(
     private readonly baseUrl: string,
     private readonly auth: Authenticator,
     private readonly fetchImpl: typeof fetch,
+    private readonly limits: HttpLimits = { timeoutMs: 0 },
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
@@ -37,16 +39,21 @@ export class Transport {
     }
 
     if (!res.ok) {
-      throw await this.toError(res);
+      throw toError(res);
     }
 
     // 204 and empty bodies deserialize to undefined.
-    if (res.status === 204) return { body: undefined as T, headers: res.headers };
-    const text = await res.text();
-    return { body: (text ? JSON.parse(text) : undefined) as T, headers: res.headers };
+    if (res.status === 204 || !res.text) return { body: undefined as T, headers: res.headers };
+    let body: T;
+    try {
+      body = JSON.parse(res.text) as T;
+    } catch {
+      throw invalidJson(res.status, res.text);
+    }
+    return { body, headers: res.headers };
   }
 
-  private send(opts: RequestOptions): Promise<Response> {
+  private async send(opts: RequestOptions): Promise<TextResponse> {
     const url = this.baseUrl + opts.path + queryString(opts.query);
     const headers: Record<string, string> = {};
 
@@ -63,28 +70,17 @@ export class Transport {
       body = JSON.stringify(opts.body);
     }
 
-    return this.fetchImpl(url, { method: opts.method, headers, body });
-  }
-
-  private async toError(res: Response): Promise<BarakoError> {
-    let body: unknown;
-    let message = `${res.status} ${res.statusText}`;
-    try {
-      const text = await res.text();
-      if (text) {
-        try {
-          body = JSON.parse(text);
-          const m = (body as { message?: unknown })?.message;
-          if (typeof m === "string" && m) message = m;
-        } catch {
-          body = text;
-          message = text;
-        }
-      }
-    } catch {
-      // keep the status-line message
-    }
-    return new BarakoError(res.status, message, body);
+    const res = await fetchText(
+      this.fetchImpl,
+      url,
+      { method: opts.method, headers, body },
+      {
+        signals: [this.limits.signal, opts.signal],
+        timeoutMs: resolveTimeout(opts.timeoutMs, this.limits.timeoutMs),
+      },
+    );
+    this.limits.onResponse?.(opts.path, res.headers);
+    return res;
   }
 }
 

@@ -5,6 +5,8 @@ import {
   type Authenticator,
   type TokenStore,
 } from "./auth";
+import { createContractMonitor, type ContractMismatch } from "./contract";
+import { DEFAULT_TIMEOUT_MS, type HttpLimits } from "./http";
 import { Transport } from "./transport";
 import { authResource, type AuthResource } from "./resources/auth";
 import { meResource, type MeResource } from "./resources/me";
@@ -28,6 +30,16 @@ export interface ClientConfig {
   storage?: TokenStore;
   /** Custom fetch (for Node <18, tests, or interception). Defaults to the global fetch. */
   fetch?: typeof fetch;
+  /** Timeout per request in milliseconds, covering headers and body. Default 30000. 0 turns it off.
+   *  A request that runs out gets a BarakoError with code `timeout`. */
+  timeoutMs?: number;
+  /** Aborts every request of this client when it fires. A request stopped this way gets a
+   *  BarakoError with code `aborted`. */
+  signal?: AbortSignal;
+  /** Called once per surface (`admin`, `delivery`) when the API's contract version is outside the
+   *  range this client supports. Without it the client logs one `console.warn`. It never changes
+   *  the result of a request. */
+  onContractMismatch?: (info: ContractMismatch) => void;
 }
 
 export interface BarakoClient {
@@ -61,14 +73,24 @@ export function createClient(config: ClientConfig): BarakoClient {
     throw new Error("createClient: no global fetch here, pass config.fetch.");
   }
 
+  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new Error("createClient: timeoutMs must be 0 or a positive number of milliseconds.");
+  }
+  const limits: HttpLimits = {
+    timeoutMs,
+    signal: config.signal,
+    onResponse: createContractMonitor(config.onContractMismatch),
+  };
+
   const store =
     config.storage ?? memoryStore({ token: config.token, refreshToken: config.refreshToken });
 
   const auth: Authenticator = config.apiKey
     ? new ApiKeyAuthenticator(config.apiKey)
-    : new JwtAuthenticator(store, config.baseUrl, fetchImpl, config.tenant);
+    : new JwtAuthenticator(store, config.baseUrl, fetchImpl, config.tenant, limits);
 
-  const transport = new Transport(config.baseUrl, auth, fetchImpl);
+  const transport = new Transport(config.baseUrl, auth, fetchImpl, limits);
 
   return {
     auth: authResource(transport, store),
