@@ -297,7 +297,10 @@ describe("requests that save nothing", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(settled, name).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
-      expect(await result, name).toMatchObject({ code: "timeout" });
+      const err = (await result) as BarakoError;
+      expect(err, name).toMatchObject({ code: "timeout" });
+      expect(err.outcomeUnknown, name).toBeUndefined();
+      expect(err.message, name).not.toMatch(/outcome/);
     }
   });
 

@@ -191,6 +191,7 @@ describe("check-contract", () => {
       answer({ "X-Api-Contract-Version": "0", "X-Delivery-Contract-Version": "10" }),
     );
     expect(r.code).toBe(0);
+    expect(r.out[0]).toContain("delivery 10");
     expect(r.out[0]).not.toContain("admin");
   });
 
@@ -200,6 +201,8 @@ describe("check-contract", () => {
       answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "0" }),
     );
     expect(r.code).toBe(0);
+    expect(r.out[0]).toContain("admin 16");
+    expect(r.out[0]).not.toContain("delivery");
   });
 
   it("an API from before the delivery split uses the admin number for delivery", async () => {
