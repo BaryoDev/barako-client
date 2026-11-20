@@ -76,6 +76,15 @@ describe("check-contract", () => {
     expect(r.code).toBe(0);
   });
 
+  it("a delivery header that is present but not a whole number is missing, not the admin number", async () => {
+    const r = await run(
+      ["https://cms.test", "--strict"],
+      answer({ "X-Api-Contract-Version": "8", "X-Delivery-Contract-Version": "12abc" }),
+    );
+    expect(r.code).toBe(1);
+    expect(r.out[0]).toContain("delivery missing");
+  });
+
   it("an API older than the minimum exits 1", async () => {
     const r = await run(
       ["https://cms.test"],

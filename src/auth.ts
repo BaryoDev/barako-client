@@ -170,10 +170,17 @@ export class JwtAuthenticator implements Authenticator {
     }
     this.limits.onResponse?.(path, res.headers);
 
+    // A logout, a login or a tenant switch during the refresh changed the session. This answer is for
+    // the old one, so it must not clear or overwrite the current one. The caller gets false.
+    const sessionChanged = () => {
+      const now = this.store.get();
+      return now.refreshToken !== refreshToken || now.token !== token;
+    };
+
     // Only a 400 or 401 says the refresh token is bad. Anything else is the server or the network
     // having a bad moment, and signing the user out for it would lose a good session.
     if (res.status === 400 || res.status === 401) {
-      this.store.clear();
+      if (!sessionChanged()) this.store.clear();
       return false;
     }
     if (!res.ok) {
@@ -195,6 +202,7 @@ export class JwtAuthenticator implements Authenticator {
     if (typeof data.token !== "string" || !data.token) throw invalidJson(res.status, "");
     // A refresh always rotates, so the token just sent is used. Keeping it would make the next
     // refresh a replay, which revokes every session the user has.
+    if (sessionChanged()) return false;
     if (!data.refreshToken) {
       this.store.clear();
       return false;

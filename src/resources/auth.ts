@@ -60,6 +60,9 @@ export function authResource(transport: Transport, store: TokenStore): AuthResou
         path: "/api/auth/refresh",
         body: { refreshToken },
         noRetry: true,
+        // The read timeout, as the automatic refresh uses. Not `read: true`: the server may have
+        // rotated the token, so a timed out refresh still says the outcome is unknown.
+        readDeadline: true,
         ...callOpts(opts),
       });
       // A refresh always rotates, so the token just sent is used and cannot be kept.

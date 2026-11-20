@@ -178,6 +178,12 @@ The token refresh is a POST, but it uses `readMs`. Every request that got a 401 
 refresh, so a hung refresh with no limit would hang them all. The refresh is shared, so it runs on
 the client's limits. Your call's own `signal` and `timeoutMs` only bound how long that call waits for
 it: an abort or a timeout there rejects your call and leaves the refresh running for the others.
+`auth.refresh()` takes `readMs` too (a per-call `timeoutMs` wins), and a refresh that times out says
+the outcome is unknown, because the server may already have rotated the token.
+
+`timeoutMs` counts per attempt, not for the whole call. A call that gets a 401 can wait up to
+`timeoutMs` for the refresh and then up to `timeoutMs` for the retry, on top of the first attempt.
+The largest timeout is 2147483647 ms (about 24.8 days); a larger one throws, in the config and per call.
 
 Methods that read every page (`contentTypes.list`, `contents.history`, `me.tenants`) apply `timeoutMs`
 to each page, not to the whole call. The `signal` stops the whole loop. A list stops with an error
@@ -245,7 +251,7 @@ In CI, run it before the build so a breaking API change fails there and not in p
 
 ```yaml
 - run: npm ci
-- run: npx barako-client check-contract https://your-cms.example.com/barakocms-api
+- run: npx barako-client check-contract https://your-cms.example.com/barakocms-api --strict
 ```
 
 ### Config

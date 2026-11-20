@@ -13,6 +13,9 @@ export interface RequestOptions extends CallOptions {
   /** Count this request as a read for the timeout and the outcome note, whatever its method. For a
    *  request that saves nothing (a login, a dry run). */
   read?: boolean;
+  /** Take the read timeout default, but keep the method's outcome note. For a request that may
+   *  change state yet must not wait forever (the token refresh). Ignored when `read` is set. */
+  readDeadline?: boolean;
 }
 
 /** The HTTP layer: builds requests, attaches auth + tenant headers, retries once after a recovered
@@ -80,7 +83,10 @@ export class Transport {
       { method: opts.method, headers, body },
       {
         signals: [this.limits.signal, opts.signal],
-        timeoutMs: resolveTimeout(opts.timeoutMs, read ? this.limits.timeouts.readMs : this.limits.timeouts.writeMs),
+        timeoutMs: resolveTimeout(
+          opts.timeoutMs,
+          read || opts.readDeadline ? this.limits.timeouts.readMs : this.limits.timeouts.writeMs,
+        ),
         read,
       },
     );

@@ -5,7 +5,11 @@ export interface CallOptions {
   /** Abort this call. The error has code `aborted`. */
   signal?: AbortSignal;
   /** Timeout for this call in milliseconds, covering headers and body. 0 turns it off. Overrides the
-   *  client's read or write default for this call. */
+   *  client's read or write default for this call. At most 2147483647 (about 24.8 days), larger or
+   *  negative values throw before any request. The timeout applies to each attempt, not to the whole
+   *  call: when a 401 starts a token refresh, the wait for the refresh and the retry each get the full
+   *  timeout, so a call can take up to three times as long. Leaving the wait for a shared refresh only
+   *  ends this call, not the refresh. */
   timeoutMs?: number;
 }
 
@@ -44,14 +48,15 @@ export function resolveTimeouts(timeouts?: Timeouts): { readMs: number; writeMs:
   return out;
 }
 
-/** Throws unless `v` is 0 or a positive finite number. `label` names the setting in the message. */
+/** Throws unless `v` is 0 or a positive finite number of at most 2147483647 ms (about 24.8 days, the
+ *  longest a single timer can wait). `label` names the setting in the message. */
 function checkTimeout(label: string, v: unknown): asserts v is number {
-  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
-    throw new Error(`${label} must be 0 or a positive finite number of milliseconds.`);
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > MAX_TIMER_MS) {
+    throw new Error(`${label} must be 0 or a number of milliseconds up to ${MAX_TIMER_MS}.`);
   }
 }
 
-// setTimeout treats anything above this as 1 ms.
+// setTimeout fires at once for anything above this, so a larger timeout is rejected, not clamped.
 const MAX_TIMER_MS = 2_147_483_647;
 
 /** A response whose body was read under the same timeout as the headers. */
@@ -125,14 +130,21 @@ export async function fetchText(
           stopWith(
             failure(0, `The request timed out after ${limits.timeoutMs} ms.${unknownNote}`, "timeout"),
           ),
-        Math.min(limits.timeoutMs, MAX_TIMER_MS),
+        limits.timeoutMs,
       );
     }
 
     const work = (async (): Promise<TextResponse> => {
       started = true;
       const res = await fetchImpl(url, { ...init, signal: controller.signal });
-      const text = await res.text();
+      let text: string;
+      try {
+        text = await res.text();
+      } catch (e) {
+        // The status line already arrived. A failed body on an error response still has a real status.
+        if (res.ok) throw e;
+        text = "";
+      }
       return { status: res.status, statusText: res.statusText, ok: res.ok, headers: res.headers, text };
     })();
     work.catch(() => {}); // when stop wins, the late rejection is ignored
@@ -218,7 +230,7 @@ export function waitBounded<T>(
   if (ms !== undefined && ms > 0) {
     timer = setTimeout(
       () => leave(new BarakoError(0, `${prefix} The request timed out after ${ms} ms.`, undefined, { code: "timeout" })),
-      Math.min(ms, MAX_TIMER_MS),
+      ms,
     );
   }
   left.catch(() => {});

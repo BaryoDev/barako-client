@@ -15,7 +15,9 @@ export class BarakoError extends Error {
   readonly body: unknown;
   /** Set for a timeout, an abort, a network failure or a body that was not JSON. */
   readonly code?: BarakoErrorCode;
-  /** True when a write timed out or lost its connection, so the server may have applied it. */
+  /** True when a write timed out, lost its connection, or was aborted after the request was sent, so
+   *  the server may have applied it. Check the server's state before repeating the write. An abort
+   *  before the request was sent leaves it unset. */
   readonly outcomeUnknown?: boolean;
 
   constructor(status: number, message: string, body?: unknown, init?: BarakoErrorInit) {

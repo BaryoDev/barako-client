@@ -214,6 +214,20 @@ describe("timeouts", () => {
     await expect(cms.auth.refresh({ timeoutMs: 20 })).rejects.toMatchObject({ code: "timeout" });
   });
 
+  it("auth.refresh with no options takes readMs, times out, keeps the tokens and says the outcome is unknown", async () => {
+    vi.useFakeTimers();
+    const store = memoryStore({ token: jwt({ tenant: "a" }), refreshToken: "r1" });
+    const cms = createClient({ baseUrl: BASE, storage: store, fetch: hangingFetch() });
+    const result = cms.auth.refresh().catch((e) => e);
+    let settled = false;
+    void result.then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toMatchObject({ code: "timeout", status: 0, outcomeUnknown: true });
+    expect(store.get().refreshToken).toBe("r1");
+  });
+
   it("a negative or non-finite readMs or writeMs throws and names the field", () => {
     for (const field of ["readMs", "writeMs"] as const) {
       for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
@@ -241,12 +255,25 @@ describe("timeouts", () => {
     expect(err.message).not.toMatch(/unknown/);
   });
 
-  it("a timeout above the timer limit is clamped, so it does not fire at once", async () => {
+  it("a timeout above the timer limit is rejected in config, and the limit itself is kept whole", async () => {
+    for (const field of ["readMs", "writeMs"] as const) {
+      expect(() =>
+        createClient({ baseUrl: BASE, fetch: hangingFetch(), timeouts: { [field]: 2_147_483_648 } }),
+      ).toThrow(new RegExp(`timeouts\\.${field} must be 0 or a number of milliseconds up to 2147483647`));
+    }
     const spy = vi.spyOn(globalThis, "setTimeout");
-    const cms = createClient({ baseUrl: BASE, fetch: mockFetch([{ body: page }]), timeouts: { readMs: 3_000_000_000 } });
+    const cms = createClient({ baseUrl: BASE, fetch: mockFetch([{ body: page }]), timeouts: { readMs: 2_147_483_647 } });
     await cms.public.list("post");
-    const delays = spy.mock.calls.map((c) => Number(c[1]));
-    expect(Math.max(...delays)).toBe(2_147_483_647);
+    expect(Math.max(...spy.mock.calls.map((c) => Number(c[1])))).toBe(2_147_483_647);
+  });
+
+  it("a per-call timeoutMs above the timer limit throws before any request", async () => {
+    const f = hangingFetch();
+    const cms = createClient({ baseUrl: BASE, fetch: f });
+    await expect(cms.public.list("post", undefined, { timeoutMs: 3_000_000_000 })).rejects.toThrow(
+      /timeoutMs must be 0 or a number of milliseconds up to 2147483647/,
+    );
+    expect(f.calls).toHaveLength(0);
   });
 
   it("a timeout aborts the signal given to fetch and still reports timeout, not network", async () => {
@@ -326,7 +353,7 @@ describe("per-call timeoutMs that config would reject", () => {
     const cms = createClient({ baseUrl: BASE, fetch: f });
     for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, "5", null]) {
       await expect(cms.public.list("post", undefined, { timeoutMs: bad as never })).rejects.toThrow(
-        /timeoutMs must be 0 or a positive finite number of milliseconds/,
+        /timeoutMs must be 0 or a number of milliseconds up to 2147483647/,
       );
     }
     expect(f.calls).toHaveLength(0);
@@ -603,26 +630,99 @@ describe("refresh details", () => {
     return { cms, store, urls };
   }
 
+  /** Lets a test hold a refresh response until it chooses, and know when the refresh began. */
+  function refreshGate() {
+    let begin!: () => void;
+    let open!: () => void;
+    const started = new Promise<void>((r) => (begin = r));
+    const opened = new Promise<void>((r) => (open = r));
+    return {
+      started,
+      release: () => open(),
+      hold: async (res: Response) => {
+        begin();
+        await opened;
+        return res;
+      },
+    };
+  }
+
+  const fresh = () => new Response(JSON.stringify({ token: "n1", refreshToken: "r2" }), { status: 200 });
+
+  it("a logout during the refresh is not undone by the refresh finishing", async () => {
+    const gate = refreshGate();
+    const { cms, store, urls } = setup(() => gate.hold(fresh()));
+    const call = cms.contents.list().catch((e) => e);
+    await gate.started;
+    store.clear();
+    gate.release();
+    const err = await call;
+    expect(err).toBeInstanceOf(BarakoError);
+    expect(err.status).toBe(401);
+    expect(store.get()).toEqual({});
+    expect(urls.filter((u) => !u.endsWith("/api/auth/refresh"))).toHaveLength(1); // no retry
+  });
+
+  it("a login during the refresh is not replaced by the refresh finishing", async () => {
+    const gate = refreshGate();
+    const { cms, store } = setup(() => gate.hold(fresh()));
+    const call = cms.contents.list().catch((e) => e);
+    await gate.started;
+    store.set({ token: "login", refreshToken: "rLogin" });
+    gate.release();
+    await call;
+    expect(store.get()).toEqual({ token: "login", refreshToken: "rLogin" });
+  });
+
+  it("a login during a refresh that answers 401 is not signed out", async () => {
+    const gate = refreshGate();
+    const { cms, store } = setup(() => gate.hold(new Response("{}", { status: 401 })));
+    const call = cms.contents.list().catch((e) => e);
+    await gate.started;
+    store.set({ token: "login", refreshToken: "rLogin" });
+    gate.release();
+    await call;
+    expect(store.get()).toEqual({ token: "login", refreshToken: "rLogin" });
+  });
+
+  it("a refresh token replaced during the refresh is kept", async () => {
+    const gate = refreshGate();
+    const { cms, store } = setup(() => gate.hold(fresh()));
+    const call = cms.contents.list().catch((e) => e);
+    await gate.started;
+    store.set({ refreshToken: "rOther" });
+    gate.release();
+    await call;
+    expect(store.get()).toEqual({ token: old, refreshToken: "rOther" });
+  });
+
+  it("a tenant switch during the refresh keeps the switched token", async () => {
+    const gate = refreshGate();
+    const { cms, store } = setup(() => gate.hold(fresh()));
+    const call = cms.contents.list().catch((e) => e);
+    await gate.started;
+    store.set({ token: "switched" });
+    gate.release();
+    await call;
+    expect(store.get()).toEqual({ token: "switched", refreshToken: "r1" });
+  });
+
   it("a caller's abort ends its wait at once and leaves the refresh to the other caller", async () => {
-    let release!: () => void;
     let refreshes = 0;
+    const gate = refreshGate();
     const { cms, store } = setup(async () => {
       refreshes++;
-      await new Promise<void>((r) => (release = r));
-      return new Response(JSON.stringify({ token: "n1", refreshToken: "r2" }), { status: 200 });
+      return gate.hold(new Response(JSON.stringify({ token: "n1", refreshToken: "r2" }), { status: 200 }));
     });
     const ctl = new AbortController();
-    const started = Date.now();
     const a = cms.contents.list(undefined, { signal: ctl.signal }).catch((e) => e);
     const b = cms.contents.list().catch((e) => e);
-    setTimeout(() => ctl.abort(), 50);
-    const errA = await a;
-    const waited = Date.now() - started;
+    await gate.started;
+    ctl.abort();
+    const errA = await a; // settles while the refresh is still held, so the abort ended only A's wait
     expect(errA).toMatchObject({ code: "aborted", status: 0 });
     expect(errA.message).toMatch(/^Token refresh failed\./);
-    expect(waited).toBeGreaterThanOrEqual(40);
-    expect(waited).toBeLessThan(600);
-    release();
+    gate.release();
     const resB = await b;
     expect(resB).not.toBeInstanceOf(Error);
     expect(refreshes).toBe(1);
@@ -631,11 +731,9 @@ describe("refresh details", () => {
 
   it("a per-call timeoutMs ends the caller's wait for a hung refresh", async () => {
     const { cms, store } = setup(() => new Promise<Response>(() => {}), { readMs: 2000 });
-    const started = Date.now();
     const err = await cms.contents.list(undefined, { timeoutMs: 50 }).catch((e) => e);
     expect(err).toMatchObject({ code: "timeout", status: 0 });
     expect(err.message).toMatch(/^Token refresh failed\. The request timed out after 50 ms/);
-    expect(Date.now() - started).toBeLessThan(600);
     expect(store.get().refreshToken).toBe("r1");
   });
 
@@ -771,6 +869,29 @@ describe("non-JSON bodies", () => {
   });
 });
 
+describe("a body that fails to read", () => {
+  const broken = (status: number) =>
+    (async () =>
+      new Response(new ReadableStream({ start: (c) => c.error(new Error("boom")) }), {
+        status,
+        statusText: "Forbidden",
+      })) as unknown as typeof fetch;
+
+  it("a non-2xx response keeps its status in a BarakoError with no code", async () => {
+    const cms = createClient({ baseUrl: BASE, fetch: broken(403) });
+    const err = await cms.public.list("post").catch((e) => e);
+    expect(err).toBeInstanceOf(BarakoError);
+    expect(err.status).toBe(403);
+    expect(err.code).toBeUndefined();
+    expect(err.message).toBe("403 Forbidden");
+  });
+
+  it("a 2xx response whose body fails is still a network error", async () => {
+    const cms = createClient({ baseUrl: BASE, fetch: broken(200) });
+    await expect(cms.public.list("post")).rejects.toMatchObject({ status: 0, code: "network" });
+  });
+});
+
 describe("contract range", () => {
   const admin = (v: string) => ({ "X-Api-Contract-Version": v });
 
@@ -810,6 +931,16 @@ describe("contract range", () => {
     const cms = createClient({ baseUrl: BASE, fetch: mockFetch([{ body: page, headers: admin("12") }]) });
     await cms.public.list("post");
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("a delivery header that is present but not a whole number does not fall back to the admin number", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const cms = createClient({
+      baseUrl: BASE,
+      fetch: mockFetch([{ body: page, headers: { ...admin("17"), "X-Delivery-Contract-Version": "12abc" } }]),
+    });
+    await cms.public.list("post");
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("a missing header does not warn", async () => {

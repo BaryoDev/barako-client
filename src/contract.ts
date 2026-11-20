@@ -32,7 +32,10 @@ export function parseContractVersion(value: string | null | undefined): number |
 export function readContractVersion(headers: Headers, surface: ContractSurface): number | undefined {
   const admin = parseContractVersion(headers.get("X-Api-Contract-Version"));
   if (surface === "admin") return admin;
-  return parseContractVersion(headers.get("X-Delivery-Contract-Version")) ?? admin;
+  // Only an absent delivery header falls back. A present one that is not a whole number counts as
+  // missing, so a garbled delivery header is not hidden by the admin number.
+  const delivery = headers.get("X-Delivery-Contract-Version");
+  return delivery === null ? admin : parseContractVersion(delivery);
 }
 
 export function surfaceOfPath(path: string): ContractSurface {
