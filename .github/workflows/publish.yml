@@ -20,6 +20,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - run: npm run typecheck
       - run: npm test
       # Builds the client first, then the CLI against it (the workspace links the client).
       - run: npm run build
