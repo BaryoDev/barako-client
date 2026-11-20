@@ -209,7 +209,7 @@ describe("check-contract", () => {
   });
 
   it("a missing url, a bad scheme or a bad surface is a usage error", async () => {
-    for (const argv of [[], ["ftp://cms.test"], ["https://cms.test", "--surface", "x"], ["https://cms.test", "--nope"], ["https://cms.test", "https://other.test"]]) {
+    for (const argv of [[], ["ftp://cms.test"], ["https://cms.test", "--surface", "x"], ["https://cms.test", "--nope"], ["https://cms.test", "https://other.test"], ["https://"]]) {
       const r = await run(argv, answer({}));
       expect(r.code).toBe(2);
       expect(r.err[0]).toContain("usage:");

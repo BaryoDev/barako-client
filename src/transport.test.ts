@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BarakoError, ContentStatus, createClient, memoryStore } from "./index";
+import { waitBounded } from "./http";
 
 const BASE = "https://cms.test/barakocms-api";
 
@@ -285,17 +286,19 @@ describe("requests that save nothing", () => {
     ["contents.update with dryRun", (c) => c.contents.update("a", { data: {} }, { dryRun: true })],
   ];
 
-  it.each(calls)("%s takes the read default of 30000 ms", async (_name, call) => {
+  it("login, logout, switch and the dry runs take the read default of 30000 ms", async () => {
     vi.useFakeTimers();
-    const cms = createClient({ baseUrl: BASE, fetch: hangingFetch() });
-    const result = call(cms).catch((e) => e);
-    await vi.advanceTimersByTimeAsync(29_999);
-    let settled = false;
-    void result.then(() => (settled = true));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(settled).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(await result).toMatchObject({ code: "timeout" });
+    for (const [name, call] of calls) {
+      const cms = createClient({ baseUrl: BASE, fetch: hangingFetch() });
+      const result = call(cms).catch((e) => e);
+      await vi.advanceTimersByTimeAsync(29_999);
+      let settled = false;
+      void result.then(() => (settled = true));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled, name).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result, name).toMatchObject({ code: "timeout" });
+    }
   });
 
   it("a timed out dry run does not say the outcome is unknown", async () => {
@@ -315,12 +318,14 @@ describe("requests that save nothing", () => {
 });
 
 describe("per-call timeoutMs that config would reject", () => {
-  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, "5"])("%s throws before any request", async (bad) => {
+  it("a negative, NaN, Infinity or non-number timeoutMs throws before any request", async () => {
     const f = hangingFetch();
     const cms = createClient({ baseUrl: BASE, fetch: f });
-    await expect(cms.public.list("post", undefined, { timeoutMs: bad as never })).rejects.toThrow(
-      /timeoutMs must be 0 or a positive finite number of milliseconds/,
-    );
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, "5", null]) {
+      await expect(cms.public.list("post", undefined, { timeoutMs: bad as never })).rejects.toThrow(
+        /timeoutMs must be 0 or a positive finite number of milliseconds/,
+      );
+    }
     expect(f.calls).toHaveLength(0);
   });
 });
@@ -631,26 +636,53 @@ describe("refresh details", () => {
     expect(store.get().refreshToken).toBe("r1");
   });
 
-  it.each([403, 503])("a refresh that answers %i rejects with the refresh prefix and keeps its status", async (status) => {
-    const { cms, store } = setup(async () => new Response(JSON.stringify({ message: "nope" }), { status }));
-    const err = await cms.contents.list().catch((e) => e);
-    expect(err).toBeInstanceOf(BarakoError);
-    expect(err.status).toBe(status);
-    expect(err.message).toBe("Token refresh failed. nope");
-    expect(store.get()).toEqual({ token: old, refreshToken: "r1" });
+  it("a refresh that answers 403 or 503 rejects with the refresh prefix and keeps its status", async () => {
+    for (const status of [403, 503]) {
+      const { cms, store } = setup(async () => new Response(JSON.stringify({ message: "nope" }), { status }));
+      const err = await cms.contents.list().catch((e) => e);
+      expect(err).toBeInstanceOf(BarakoError);
+      expect(err.status).toBe(status);
+      expect(err.message).toBe("Token refresh failed. nope");
+      expect(store.get()).toEqual({ token: old, refreshToken: "r1" });
+    }
   });
 
-  it.each([{ refreshToken: "r2" }, { token: "", refreshToken: "r2" }, { token: 5, refreshToken: "r2" }])(
-    "a refresh 200 with %j has no usable token: invalid-json and the tokens stay",
-    async (answer) => {
+  it("a refresh 200 without a non-empty string token is invalid-json and the tokens stay", async () => {
+    for (const answer of [{ refreshToken: "r2" }, { token: "", refreshToken: "r2" }, { token: 5, refreshToken: "r2" }]) {
       const { cms, store, urls } = setup(async () => new Response(JSON.stringify(answer), { status: 200 }));
       const err = await cms.contents.list().catch((e) => e);
       expect(err).toMatchObject({ code: "invalid-json", status: 200 });
       expect(JSON.stringify(err.body)).not.toContain("r2");
       expect(store.get()).toEqual({ token: old, refreshToken: "r1" });
       expect(urls).toHaveLength(2);
-    },
-  );
+    }
+  });
+
+  it("a caller that waits for a refresh with a per-call timeoutMs leaves no timer behind", async () => {
+    vi.useFakeTimers();
+    const { cms } = setup(async () => new Response(JSON.stringify({ token: "n1", refreshToken: "r2" }), { status: 200 }));
+    await cms.contents.list(undefined, { timeoutMs: 5000 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("waitBounded with an already aborted signal rejects and leaves no listener on the others", async () => {
+    const live = new AbortController();
+    let listeners = 0;
+    const add = live.signal.addEventListener.bind(live.signal);
+    const remove = live.signal.removeEventListener.bind(live.signal);
+    live.signal.addEventListener = ((type: string, fn: never, o: never) => {
+      listeners++;
+      add(type, fn, o);
+    }) as typeof live.signal.addEventListener;
+    live.signal.removeEventListener = ((type: string, fn: never, o: never) => {
+      listeners--;
+      remove(type, fn, o);
+    }) as typeof live.signal.removeEventListener;
+    await expect(
+      waitBounded(new Promise<never>(() => {}), { signals: [live.signal, AbortSignal.abort()] }, "Token refresh failed."),
+    ).rejects.toMatchObject({ code: "aborted" });
+    expect(listeners).toBe(0);
+  });
 
   it("a baseUrl with a trailing slash refreshes at /api/auth/refresh", async () => {
     const { cms, urls } = setup(
