@@ -157,24 +157,37 @@ const cms = createClient({
   signal: appController.signal,
 });
 
-// per call: the last argument of every method on every resource
+// per call: the last argument of every method that makes a request
 await cms.public.list("post", { pageSize: 100 }, { signal, timeoutMs: 5_000 });
 await cms.contents.create(input, { timeoutMs: 600_000 }); // a slow write
 ```
 
-`signal` on the client aborts every request. Every method on every resource takes a trailing
-`{ signal, timeoutMs }`. A per-call `timeoutMs` replaces the read or write default for that call,
-and `0` turns it off. On `contents.create` and `contents.update` these fields sit in the existing
+`signal` on the client aborts every request. Every method that makes a request takes a trailing
+`{ signal, timeoutMs }`. The two exceptions are `public.fileUrl` and `auth.isAuthenticated`, which
+build a string or read the store and send nothing. A per-call `timeoutMs` replaces the read or write
+default for that call, and `0` turns it off. A value config would reject (negative, `NaN`,
+`Infinity`, not a number) throws before any request is sent. On `contents.create` and `contents.update` these fields sit in the existing
 options object next to `dryRun`, `idempotencyKey` and `ifMatch`. An aborted request has
 `code: "aborted"`.
 
+Calls that save nothing count as reads, whatever their method, and use `readMs`: `auth.login`,
+`auth.logout`, `me.switch`, and `contents.create` and `contents.update` with `dryRun`. A dry run that
+times out does not say the outcome is unknown.
+
 The token refresh is a POST, but it uses `readMs`. Every request that got a 401 waits on that one
-refresh, so a hung refresh with no limit would hang them all.
+refresh, so a hung refresh with no limit would hang them all. The refresh is shared, so it runs on
+the client's limits. Your call's own `signal` and `timeoutMs` only bound how long that call waits for
+it: an abort or a timeout there rejects your call and leaves the refresh running for the others.
+
+Methods that read every page (`contentTypes.list`, `contents.history`, `me.tenants`) apply `timeoutMs`
+to each page, not to the whole call. The `signal` stops the whole loop. A list stops with an error
+after 1000 pages, so a server that never ends its list cannot keep it running forever.
 
 The client never retries after a timeout or a network error. The one retry it does is a request
 that got a 401 after the token was refreshed. A write (anything but GET and HEAD) that times out or
 loses its connection may still have been applied, so the error has `outcomeUnknown: true` and says so.
-Check before you send it again.
+So does a write you abort after it was sent. An abort before the request was sent does not. Check
+before you send it again.
 
 ### Error codes
 
@@ -188,11 +201,19 @@ Check before you send it again.
 | `invalid-json` | the response's | A 2xx answer whose body was not JSON, such as a proxy page |
 
 An error from a non-JSON body (a proxy's HTML page) has its `message` and `body` cut to 500
-characters. A JSON error body stays as parsed.
+characters. A JSON error body stays as parsed. The reason in a `network` error is cut to 500
+characters on one line, and a `scheme://user:pass@` in it is shown as `scheme://***@`.
 
 A failed token refresh signs you out only when the API answers 400 or 401 to it. A 5xx, a 403, a
 429, a timeout or a network error keeps both tokens, and the original request rejects with that
-failure so you can try again.
+failure so you can try again. The message starts with "Token refresh failed." and the status is the
+refresh's own. A refresh that answers 200 without a non-empty `token` is an `invalid-json` error and
+keeps the tokens.
+
+`createClient` throws when `baseUrl` has a user or password. Use `apiKey` or `auth.login`.
+
+Known limit: a refresh that times out after the server already rotated the token leaves the client
+holding the old one. What happens on the next refresh is up to the server's replay rule.
 
 ### Contract range
 
@@ -211,14 +232,14 @@ const cms = createClient({
 ### check-contract
 
 `barako-client check-contract <api url> [--surface admin|delivery|both] [--strict]` makes one `GET <url>/api/meta`
-with no auth and compares the headers with the range of the client version you installed. The
+(the URL's path is kept, a query or fragment is dropped) with no auth and compares the headers with the range of the client version you installed. The
 default surface is `both`. It prints one line and exits:
 
 | Exit | Meaning |
 | --- | --- |
 | 0 | In range, or newer than this client (the line says "newer than this client") |
 | 1 | Older than the client's minimum, or the header it needs is missing or not a whole number. With `--strict`, also newer than the client's maximum |
-| 2 | The API could not be reached (network, DNS, timeout), or the arguments are wrong |
+| 2 | The API could not be reached (network, DNS, timeout) or answered 5xx with no contract header, or the arguments are wrong. A URL with a user or password is a bad argument |
 
 In CI, run it before the build so a breaking API change fails there and not in production:
 
