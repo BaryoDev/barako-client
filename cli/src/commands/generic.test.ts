@@ -627,6 +627,11 @@ describe("generic update body and errors", () => {
     });
     expect(r.code).toBe(0);
     expect(r.calls[1]!.body).toEqual({ id: "i1", total: 7, version: 3 });
+    const num = await cli(["update", "invoices", "1", "--set", "id:=1", "--set", "total:=7", ...WITH_FILE], {
+      files: FILES,
+      reply: (c) => (c.method === "GET" ? { body: { id: "1", version: 3 } } : { body: {} }),
+    });
+    expect(num.calls[1]!.body).toEqual({ id: "1", total: 7, version: 3 });
   });
 
   it("refuses a --set id that differs from the URL id, naming both, before any request", async () => {

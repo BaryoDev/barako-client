@@ -51,6 +51,8 @@ const rollbackCommand: Command = {
   },
 };
 
+const ENTRY_NOUN = "entry";
+
 const eraseCommand: Command = {
   name: "content erase",
   summary: "Remove an entry and its history for good. Needs the content:destructive scope.",
@@ -60,7 +62,7 @@ const eraseCommand: Command = {
   ],
   async run({ client }, args) {
     const id = args.id as string;
-    requireConfirm(args, id, "entry");
+    requireConfirm(args, id, ENTRY_NOUN);
     try {
       await client.contents.erase(id);
     } catch (err) {
