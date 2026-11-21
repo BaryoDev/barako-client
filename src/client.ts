@@ -8,6 +8,7 @@ import {
 import { createContractMonitor, type ContractMismatch } from "./contract";
 import { resolveTimeouts, type HttpLimits, type Timeouts } from "./http";
 import { Transport } from "./transport";
+import { resourcesApi, type ResourceDefinition, type ResourcesApi } from "./resources";
 import { authResource, type AuthResource } from "./resources/auth";
 import { meResource, type MeResource } from "./resources/me";
 import { contentsResource, type ContentsResource } from "./resources/contents";
@@ -41,6 +42,9 @@ export interface ClientConfig {
    *  range this client supports. Without it the client logs one `console.warn`. It never changes
    *  the result of a request. */
   onContractMismatch?: (info: ContractMismatch) => void;
+  /** Resources to add to the built in table the generic verbs read. A bad definition, or a name
+   *  that is already built in, throws here, before any request. */
+  resources?: ResourceDefinition[];
 }
 
 export interface BarakoClient {
@@ -52,6 +56,9 @@ export interface BarakoClient {
   pages: PagesResource;
   /** Anonymous public delivery for a website frontend (no auth needed). */
   public: PublicResource;
+  /** The resource table and `call`, the generic route caller behind `barako get`, `list`, `create`,
+   *  `update` and `delete`. */
+  resources: ResourcesApi;
 }
 
 /** True when the URL parses and carries a user or password. A relative URL has neither. */
@@ -105,6 +112,7 @@ export function createClient(config: ClientConfig): BarakoClient {
     : new JwtAuthenticator(store, baseUrl, fetchImpl, config.tenant, limits);
 
   const transport = new Transport(config.baseUrl, auth, fetchImpl, limits);
+  const resources = resourcesApi(transport, config.resources);
 
   return {
     auth: authResource(transport, store),
@@ -114,5 +122,6 @@ export function createClient(config: ClientConfig): BarakoClient {
     blocks: blocksResource(transport),
     pages: pagesResource(transport),
     public: publicResource(transport, config.baseUrl),
+    resources,
   };
 }
