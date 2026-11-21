@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `BarakoClient` has a new required member `resources`, so a hand-built object typed as `BarakoClient` stops compiling until it adds one.
+- A definition's `update` route takes an optional `merge: "data"`, which tells callers that the row keeps its fields under `data`. The built in `contents` update sets it. A path for `get`, `update` or `delete` must hold `{id}` exactly once.
+- A definitions file that holds an unknown key names it only when it is short and plain.
 - New `cms.resources`: a table of resources (`names()`, `definition(name)`) and `call(name, verb, { id?, body?, query?, dryRun?, ifMatch?, signal?, timeoutMs? })`, which runs one verb through the client's own transport. New config `resources` adds definitions to the built in table (`contents` without a delete, and `content-types`). A definition is a name and a route per verb (`{ method, path, dryRun? }`, path a template whose only placeholder is `{id}`). A bad definition or a built in name throws from `createClient`. New exports: `BUILTIN_RESOURCES`, `RESOURCE_VERBS`, `checkResourceDefinitions`, `routeLabel`, `verbsOf` and the types `ResourceDefinition`, `ResourceRoute`, `ResourceMethod`, `ResourceVerb`, `ResourceCallOptions` and `ResourcesApi`.
 - The `barako` CLI gains `get`, `list`, `create`, `update`, `delete` and `resources` over that table, and `--resources FILE` or `BARAKO_RESOURCES` to add a module's resources from a JSON file.
 - Reads (GET and HEAD) now stop after 30 s by default, with a `BarakoError` with `code: "timeout"`. Writes have no default limit. This changes a default: a read that used to wait forever now rejects. Set `timeouts: { readMs: 0 }` to keep the old behaviour. The token refresh uses `readMs`, also `auth.refresh()`. A timeout is at most 2147483647 ms, in config and per call, and a larger value throws.

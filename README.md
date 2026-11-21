@@ -149,13 +149,15 @@ await cms.resources.call("invoices", "update", { id: "i1", body: { total: 7 }, i
 
 A route's `path` is a template. It starts with `/api/`, holds no `?`, `#`, `..`, `//`, `\`, `%` or
 whitespace, and its only placeholder is `{id}`, which must be a whole segment. `get`, `update` and
-`delete` need `{id}`, `list` and `create` must not have it. `list` and `get` use GET, `create` POST,
+`delete` need `{id}` once, `list` and `create` must not have it. `list` and `get` use GET, `create` POST,
 `update` PUT or PATCH and `delete` DELETE. `dryRun: true` is allowed on `create` and `update` only: the
 client then sends `dryRun: true` in the body when you pass `dryRun`. On any other route `call` with
 `dryRun` throws a `TypeError` naming the route, before any request. The id is encoded as one path
 segment, and query values are encoded like the other calls. A bad definition, or a name that is already
 built in, throws from `createClient` before any request. A get or an update that answers with an object
-also carries `etag` when the server sends one.
+also carries `etag` when the server sends one. `update` takes an optional `merge: "data"`, a hint for
+callers such as the `barako` CLI: the row keeps its fields under `data`, so a change is merged into it.
+The client itself does not read it. The built in `contents` update sets it.
 
 ### Public delivery
 

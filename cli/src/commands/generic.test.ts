@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import type { BarakoClient } from "@baryodev/barako-client";
 import { run } from "../main";
+import { commands } from "../registry";
+import { loadResourcesFile } from "../resources-file";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -464,5 +469,258 @@ describe("resources", () => {
   it("lists only the built in resources when no file is given", async () => {
     const r = await cli(["resources"]);
     expect((r.body.result as Array<{ source: string }>).map((e) => e.source)).toEqual(["built in", "built in"]);
+  });
+});
+
+describe("the definitions file loader", () => {
+  it("checks the definitions itself, without a client", () => {
+    const files: Record<string, string> = { "f.json": JSON.stringify({ resources: [{ name: "x", list: { method: "GET", path: "/nope" } }] }) };
+    const load = () => loadResourcesFile("f.json", (p) => files[p]!);
+    expect(load).toThrow("The resources file is refused. Invalid resource");
+    expect(load).toThrow(`"path" must start with /api/`);
+  });
+
+  it("stops with a usage error naming client 0.6.0 when the client module lacks checkResourceDefinitions", () => {
+    let message = "";
+    let code = "";
+    try {
+      loadResourcesFile("f.json", () => "{}", { BUILTIN_RESOURCES: [], RESOURCE_VERBS: [], routeLabel: () => "", verbsOf: () => [] });
+    } catch (e) {
+      message = (e as Error).message;
+      code = (e as { code: string }).code;
+    }
+    expect(code).toBe("usage");
+    expect(message).toContain("@baryodev/barako-client 0.6.0 or later");
+  });
+
+  it("refuses a duplicate name inside one file", async () => {
+    const files = { "d.json": JSON.stringify({ resources: [INVOICES, INVOICES] }) };
+    const r = await cli(["resources", "--resources", "d.json"], { files });
+    expect(r.code).toBe(1);
+    expect(r.body.error!.message).toContain(`"invoices": "name" is already taken`);
+  });
+
+  it("refuses a __proto__ key on a definition and on a route", async () => {
+    const onDef = `{"resources":[{"name":"x","__proto__":{}}]}`;
+    const onRoute = `{"resources":[{"name":"x","list":{"method":"GET","path":"/api/x","__proto__":{}}}]}`;
+    for (const text of [onDef, onRoute]) {
+      const r = await cli(["resources", "--resources", "p.json"], { files: { "p.json": text } });
+      expect(r.code).toBe(1);
+      expect(r.body.error!.message).toContain("an unknown key.");
+    }
+  });
+
+  it("does not echo an unknown key that holds escape bytes or is 1000 characters long", async () => {
+    for (const key of ["\u001b[31mred", "k".repeat(1000)]) {
+      const text = JSON.stringify({ resources: [{ name: "x", [key]: 1 }] });
+      const r = await cli(["resources", "--resources", "k.json"], { files: { "k.json": text } });
+      expect(r.code).toBe(1);
+      expect(r.body.error!.message).toContain("an unknown key.");
+      expect(r.body.error!.message).not.toContain("\u001b");
+      expect(r.body.error!.message.length).toBeLessThan(300);
+    }
+  });
+});
+
+describe("a client without the resource API", () => {
+  const verbs: Array<[string, Record<string, unknown>]> = [
+    ["get", { resource: "contents", id: "c1" }],
+    ["list", { resource: "contents" }],
+    ["create", { resource: "contents", set: ["a=b"] }],
+    ["update", { resource: "contents", id: "c1", set: ["a=b"] }],
+    ["delete", { resource: "contents", id: "c1", confirm: "c1" }],
+  ];
+
+  it("stops get, list, create, update and delete with a usage error naming client 0.6.0, before any request", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    for (const [name, args] of verbs) {
+      const command = commands.find((c) => c.name === name)!;
+      let err: { code?: string; message?: string } = {};
+      try {
+        await command.run({ client: {} as unknown as BarakoClient, readFile: () => "" }, args);
+      } catch (e) {
+        err = e as { code: string; message: string };
+      }
+      expect(err.code, name).toBe("usage");
+      expect(err.message, name).toContain("@baryodev/barako-client 0.6.0 or later");
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("the definitions file is read only for the generic verbs", () => {
+  it("does not stop content list when BARAKO_RESOURCES names a file that is missing", async () => {
+    const r = await cli(["content", "list", "post"], {
+      env: { BARAKO_RESOURCES: "missing.json" },
+      reply: () => ({ body: { items: [], hasNextPage: false } }),
+    });
+    expect(r.code).toBe(0);
+    expect(r.calls).toHaveLength(1);
+  });
+
+  it("fails a generic verb with a usage error when BARAKO_RESOURCES names a bad file", async () => {
+    const r = await cli(["list", "contents"], { env: { BARAKO_RESOURCES: "bad.json" }, files: { "bad.json": "{ nope" } });
+    expect(r.code).toBe(1);
+    expect(r.body.error!.message).toContain("not valid JSON");
+    expect(r.calls).toHaveLength(0);
+  });
+});
+
+describe("the CLI imports from the client", () => {
+  // The values client 0.5.0 exports. Anything else must be read through client-api.ts at call time.
+  const EXPORTED_BY_0_5_0 = ["BarakoError", "ContentStatus", "FieldMask", "SensitivityLevel", "browserStore", "createClient", "memoryStore", "tenantOfToken"];
+
+  function sources(dir: string): string[] {
+    return readdirSync(dir).flatMap((name) => {
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) return sources(full);
+      return full.endsWith(".ts") && !full.endsWith(".test.ts") ? [full] : [];
+    });
+  }
+
+  it("names only values that client 0.5.0 exports, as value imports", () => {
+    const found: string[] = [];
+    for (const file of sources(join(__dirname, ".."))) {
+      const text = readFileSync(file, "utf8");
+      for (const m of text.matchAll(/import\s+(type\s+)?\{([^}]*)\}\s*from\s*["']@baryodev\/barako-client["']/g)) {
+        if (m[1]) continue;
+        for (const part of m[2]!.split(",")) {
+          const item = part.trim();
+          if (item === "" || item.startsWith("type ")) continue;
+          found.push(item.split(/\s+as\s+/)[0]!);
+        }
+      }
+    }
+    expect(found.length).toBeGreaterThan(0);
+    expect(found.filter((n) => !EXPORTED_BY_0_5_0.includes(n))).toEqual([]);
+  });
+});
+
+describe("content rollback and content erase", () => {
+  it("still say entry id for a missing and for a different --confirm", async () => {
+    const client = { contents: { rollback: vi.fn(), erase: vi.fn() } } as unknown as BarakoClient;
+    const exec = (name: string, args: Record<string, unknown>) =>
+      commands.find((c) => c.name === name)!.run({ client, readFile: () => "" }, args);
+    const message = async (name: string, args: Record<string, unknown>) => {
+      try {
+        await exec(name, args);
+      } catch (e) {
+        return (e as Error).message;
+      }
+      return "";
+    };
+    expect(await message("content rollback", { id: "a", versionId: "v" })).toBe("This command is destructive. Pass --confirm with the entry id.");
+    expect(await message("content erase", { id: "a" })).toBe("This command is destructive. Pass --confirm with the entry id.");
+    expect(await message("content rollback", { id: "a", versionId: "v", confirm: "b" })).toBe("--confirm does not match the entry id. Nothing was changed.");
+    expect(await message("content erase", { id: "a", confirm: "b" })).toBe("--confirm does not match the entry id. Nothing was changed.");
+  });
+});
+
+describe("generic update body and errors", () => {
+  const row = (extra: Record<string, unknown> = {}) => ({ id: "i1", version: 3, ...extra });
+
+  it("accepts a --set id equal to the URL id and sends the URL id", async () => {
+    const r = await cli(["update", "invoices", "i1", "--set", "id=i1", "--set", "total:=7", ...WITH_FILE], {
+      files: FILES,
+      reply: (c) => (c.method === "GET" ? { body: row() } : { body: {} }),
+    });
+    expect(r.code).toBe(0);
+    expect(r.calls[1]!.body).toEqual({ id: "i1", total: 7, version: 3 });
+  });
+
+  it("refuses a --set id that differs from the URL id, naming both, before any request", async () => {
+    const r = await cli(["update", "invoices", "i1", "--set", "id=other", ...WITH_FILE], { files: FILES });
+    expect(r.code).toBe(1);
+    expect(r.body.error!.message).toContain("other");
+    expect(r.body.error!.message).toContain("i1");
+    expect(r.calls).toHaveLength(0);
+  });
+
+  it("sends named top level fields when a route has no merge, even if the row has a data column", async () => {
+    const withData = await cli(["update", "invoices", "i1", "--set", "total:=7", ...WITH_FILE], {
+      files: FILES,
+      reply: (c) => (c.method === "GET" ? { body: row({ data: { total: 1, keep: true } }) } : { body: {} }),
+    });
+    expect(withData.calls[1]!.body).toEqual({ total: 7, id: "i1", version: 3 });
+    const nullData = await cli(["update", "invoices", "i1", "--set", "total:=7", ...WITH_FILE], {
+      files: FILES,
+      reply: (c) => (c.method === "GET" ? { body: row({ data: null }) } : { body: {} }),
+    });
+    expect(nullData.calls[1]!.body).toEqual(withData.calls[1]!.body);
+  });
+
+  it("merges into data on a route marked merge data, and starts from an empty data when the row has none", async () => {
+    const merging = { ...INVOICES, update: { ...INVOICES.update, merge: "data" } };
+    const files = { "m.json": JSON.stringify({ resources: [merging] }) };
+    const kept = await cli(["update", "invoices", "i1", "--set", "total:=7", "--resources", "m.json"], {
+      files,
+      reply: (c) => (c.method === "GET" ? { body: row({ data: { total: 1, keep: true } }) } : { body: {} }),
+    });
+    expect(kept.calls[1]!.body).toEqual({ id: "i1", data: { total: 7, keep: true }, version: 3 });
+    const none = await cli(["update", "invoices", "i1", "--set", "total:=7", "--resources", "m.json"], {
+      files,
+      reply: (c) => (c.method === "GET" ? { body: row({ data: null }) } : { body: {} }),
+    });
+    expect(none.calls[1]!.body).toEqual({ id: "i1", data: { total: 7 }, version: 3 });
+  });
+
+  it("refuses a dryRun field from --set or --file on an unmarked and on a marked route, before any request", async () => {
+    const dry = { "d.json": JSON.stringify({ dryRun: true, total: 1 }) };
+    const files = { ...FILES, ...dry };
+    const cases: string[][] = [
+      ["create", "content-types", "--set", "dryRun:=true"],
+      ["create", "invoices", "--set", "dryRun:=true", ...WITH_FILE],
+      ["create", "invoices", "--file", "d.json", ...WITH_FILE],
+      ["update", "invoices", "i1", "--set", "dryRun:=true", ...WITH_FILE],
+      ["update", "invoices", "i1", "--file", "d.json", ...WITH_FILE],
+    ];
+    for (const argv of cases) {
+      const r = await cli(argv, { files });
+      expect(r.code, argv.join(" ")).toBe(1);
+      expect(r.body.error!.message, argv.join(" ")).toContain("--dry-run");
+      expect(r.calls, argv.join(" ")).toHaveLength(0);
+    }
+  });
+
+  it("re-reads the row and reports its current version on a 409, 412 and 428 from the update", async () => {
+    for (const status of [409, 412, 428]) {
+      let gets = 0;
+      const r = await cli(["update", "invoices", "i1", "--set", "total:=7", ...WITH_FILE], {
+        files: FILES,
+        reply: (c) => {
+          if (c.method === "PUT") return { status, body: { message: "stale" } };
+          gets++;
+          return { body: row({ version: gets === 1 ? 3 : 7 }) };
+        },
+      });
+      expect(r.summary.map((x) => x.split(" ")[0]), String(status)).toEqual(["GET", "PUT", "GET"]);
+      expect(r.body.error!.code, String(status)).toBe(status === 428 ? "version_required" : "conflict");
+      expect(r.code, String(status)).toBe(3);
+      expect((r.body.error as any).details.currentVersion, String(status)).toBe(7);
+    }
+  });
+
+  it("names the route on a 403 from the update PUT", async () => {
+    const r = await cli(["update", "invoices", "i1", "--set", "total:=7", ...WITH_FILE], {
+      files: FILES,
+      reply: (c) => (c.method === "PUT" ? { status: 403, body: {} } : { body: row() }),
+    });
+    expect(r.code).toBe(5);
+    expect(r.body.error!.message).toContain("PUT /api/modules/invoices/{id}");
+  });
+});
+
+describe("generic list page size", () => {
+  it("refuses --query pageSize together with --limit, before any request", async () => {
+    const r = await cli(["list", "invoices", "--query", "pageSize=5", "--limit", "9", ...WITH_FILE], { files: FILES });
+    expect(r.code).toBe(1);
+    expect(r.body.error!.message).toContain("--limit");
+    expect(r.calls).toHaveLength(0);
+  });
+
+  it("sends no page size by default", async () => {
+    const r = await cli(["list", "invoices", ...WITH_FILE], { files: FILES });
+    expect(r.calls[0]!.url).toBe(`${BASE}/api/modules/invoices`);
   });
 });

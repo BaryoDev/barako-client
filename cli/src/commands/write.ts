@@ -62,6 +62,26 @@ export function currentVersionOf(entry: unknown): number | undefined {
   return typeof v === "number" ? v : undefined;
 }
 
+/** The error for a failed update. A 409, 412 or 428 re-reads the row with `reread` and reports its
+ *  current version beside the server's answer. Anything else keeps the usual mapping. */
+export async function updateFailure(err: unknown, reread: () => Promise<unknown>): Promise<CliError> {
+  const status = (err as { status?: unknown } | null)?.status;
+  if (status === 409 || status === 412 || status === 428) {
+    let latest: number | undefined;
+    try {
+      latest = currentVersionOf(await reread());
+    } catch {
+      // Report the conflict without the version.
+    }
+    const base = toCliError(err);
+    return new CliError(codeForStatus(status), base.message, {
+      status,
+      details: { currentVersion: latest, server: base.details },
+    });
+  }
+  return toCliError(err);
+}
+
 const updateCommand: Command = {
   name: "content update",
   summary: "Change fields of an entry. Fields you do not name keep their values.",
@@ -108,21 +128,7 @@ const updateCommand: Command = {
     try {
       return await client.contents.update(id, { data, version }, opts);
     } catch (err) {
-      const status = (err as { status?: unknown } | null)?.status;
-      if (status === 409 || status === 412 || status === 428) {
-        let latest: number | undefined;
-        try {
-          latest = currentVersionOf(await client.contents.get(id));
-        } catch {
-          // Report the conflict without the version.
-        }
-        const base = toCliError(err);
-        throw new CliError(codeForStatus(status), base.message, {
-          status,
-          details: { currentVersion: latest, server: base.details },
-        });
-      }
-      throw toCliError(err);
+      throw await updateFailure(err, () => client.contents.get(id));
     }
   },
 };

@@ -117,6 +117,49 @@ describe("resource definition checks", () => {
     expect(() => client([{ body: {} }], [ORDERS, ORDERS])).toThrow(`"orders": "name" is already taken`);
   });
 
+  it("createClient refuses a path that holds {id} twice, a trailing slash and a bare /api/", () => {
+    const bad = (verb: string, path: string, method = "GET") => () =>
+      client([{ body: {} }], [{ name: "x", [verb]: { method, path } } as unknown as ResourceDefinition]);
+    expect(bad("get", "/api/a/{id}/b/{id}")).toThrow(`"x" get: "path" must hold {id} exactly once.`);
+    expect(bad("delete", "/api/a/{id}/{id}", "DELETE")).toThrow("exactly once");
+    expect(bad("get", "/api/a/{id}/")).toThrow("empty");
+    expect(bad("list", "/api/")).toThrow("empty");
+    expect(bad("list", "/api/a/")).toThrow("empty");
+  });
+
+  it("createClient accepts merge data on update only, and the contents update has it", () => {
+    const def = (verb: string, merge: unknown, method: string, path: string) =>
+      client([{ body: {} }], [{ name: "x", [verb]: { method, path, merge } } as unknown as ResourceDefinition]);
+    expect(def("update", "data", "PUT", "/api/x/{id}").cms.resources.definition("x")?.update).toEqual({ method: "PUT", path: "/api/x/{id}", merge: "data" });
+    expect(() => def("update", "other", "PUT", "/api/x/{id}")).toThrow(`"x" update: "merge" must be "data".`);
+    expect(() => def("create", "data", "POST", "/api/x")).toThrow(`"x" create: "merge" is allowed on update only.`);
+    expect(() => def("update", true, "PUT", "/api/x/{id}")).toThrow(`"merge" must be "data"`);
+    expect(BUILTIN_RESOURCES[0]!.update?.merge).toBe("data");
+  });
+
+  it("createClient names an unknown key only when it is short and plain", () => {
+    const long = "k".repeat(1000);
+    const cases: Array<[string, ResourceDefinition]> = [
+      ["escape on a definition", { name: "x", ["\u001b[31mred"]: 1 } as unknown as ResourceDefinition],
+      ["long on a definition", { name: "x", [long]: 1 } as unknown as ResourceDefinition],
+      ["escape on a route", { name: "x", list: { method: "GET", path: "/api/x", ["\u001b[31mred"]: 1 } } as unknown as ResourceDefinition],
+      ["long on a route", { name: "x", list: { method: "GET", path: "/api/x", [long]: 1 } } as unknown as ResourceDefinition],
+      ["a proto key on a definition", JSON.parse('{"name":"x","__proto__":{}}') as ResourceDefinition],
+      ["a proto key on a route", JSON.parse('{"name":"x","list":{"method":"GET","path":"/api/x","__proto__":{}}}') as ResourceDefinition],
+    ];
+    for (const [label, def] of cases) {
+      let message = "";
+      try {
+        client([{ body: {} }], [def]);
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message, label).toContain("an unknown key.");
+      expect(message, label).not.toContain("\u001b");
+      expect(message.length, label).toBeLessThan(200);
+    }
+  });
+
   it("createClient refuses a definition that is not an object", () => {
     expect(() => createClient({ baseUrl: BASE, apiKey: "k", resources: [null as unknown as ResourceDefinition] })).toThrow("a definition must be an object");
   });
@@ -240,8 +283,10 @@ describe("resources.call", () => {
   });
 
   it("does not add an ETag to a dry run answer", async () => {
-    const { cms } = client([{ body: { dryRun: true }, headers: { ETag: '"e9"' } }]);
-    expect(await cms.resources.call("orders", "create", { body: {}, dryRun: true })).toEqual({ dryRun: true });
+    const marked: ResourceDefinition = { ...ORDERS, name: "ledgers", update: { method: "PUT", path: "/api/modules/ledgers/{id}", dryRun: true } };
+    const { cms } = client([{ body: { dryRun: true }, headers: { ETag: '"e9"' } }, { body: { id: "o1" }, headers: { ETag: '"e9"' } }], [marked]);
+    expect(await cms.resources.call("ledgers", "update", { id: "o1", body: {}, dryRun: true })).toEqual({ dryRun: true });
+    expect(await cms.resources.call("ledgers", "update", { id: "o1", body: {} })).toEqual({ id: "o1", etag: '"e9"' });
   });
 
   it("returns undefined for a 204", async () => {

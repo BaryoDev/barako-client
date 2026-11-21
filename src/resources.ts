@@ -10,6 +10,9 @@ export interface ResourceRoute {
   path: string;
   /** True when the server's route accepts a dry run. Allowed on create and update only. */
   dryRun?: boolean;
+  /** On update only: the row keeps its fields under `data`, so a change is merged into it. Without
+   *  this, a change is a set of named top-level fields. The only value is "data". */
+  merge?: "data";
 }
 
 /** A resource the generic verbs can reach: a name and one route per verb it supports. */
@@ -71,7 +74,7 @@ export const BUILTIN_RESOURCES: readonly ResourceDefinition[] = deepFreeze([
     list: { method: "GET", path: "/api/contents" },
     get: { method: "GET", path: "/api/contents/{id}" },
     create: { method: "POST", path: "/api/contents", dryRun: true },
-    update: { method: "PUT", path: "/api/contents/{id}", dryRun: true },
+    update: { method: "PUT", path: "/api/contents/{id}", dryRun: true, merge: "data" },
   },
   {
     name: "content-types",
@@ -88,6 +91,14 @@ function deepFreeze<T extends object>(value: T): T {
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+const SAFE_KEY = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+/** Names a key only when it is short and plain, so a file cannot put escape bytes or a huge string
+ *  into a message. */
+function unknownKey(key: string): string {
+  return SAFE_KEY.test(key) ? `unknown key "${key}".` : "an unknown key.";
 }
 
 function fail(label: string, message: string): never {
@@ -118,7 +129,7 @@ function checkRoute(name: string, verb: ResourceVerb, route: unknown): ResourceR
   const label = `"${name}" ${verb}`;
   if (!isObject(route)) return fail(label, `the route must be an object.`);
   for (const key of Object.keys(route)) {
-    if (key !== "method" && key !== "path" && key !== "dryRun") return fail(label, `unknown key "${key}".`);
+    if (key !== "method" && key !== "path" && key !== "dryRun" && key !== "merge") return fail(label, unknownKey(key));
   }
   const method = route.method;
   if (typeof method !== "string" || !METHODS.includes(method)) {
@@ -128,14 +139,19 @@ function checkRoute(name: string, verb: ResourceVerb, route: unknown): ResourceR
     return fail(label, `"method" must be ${VERB_METHODS[verb].join(" or ")} for ${verb}.`);
   }
   const path = checkPath(label, route.path);
-  const holdsId = path.split("/").includes("{id}");
-  if (NEEDS_ID[verb] && !holdsId) return fail(label, `"path" must hold {id}.`);
-  if (!NEEDS_ID[verb] && holdsId) return fail(label, `"path" must not hold {id}.`);
+  const idCount = path.split("/").filter((seg) => seg === "{id}").length;
+  if (NEEDS_ID[verb] && idCount !== 1) return fail(label, `"path" must hold {id} exactly once.`);
+  if (!NEEDS_ID[verb] && idCount > 0) return fail(label, `"path" must not hold {id}.`);
   const out: ResourceRoute = { method: method as ResourceMethod, path };
   if (route.dryRun !== undefined) {
     if (typeof route.dryRun !== "boolean") return fail(label, `"dryRun" must be true or false.`);
     if (!TAKES_DRY_RUN.includes(verb)) return fail(label, `"dryRun" is allowed on create and update only.`);
     if (route.dryRun) out.dryRun = true;
+  }
+  if (route.merge !== undefined) {
+    if (route.merge !== "data") return fail(label, `"merge" must be "data".`);
+    if (verb !== "update") return fail(label, `"merge" is allowed on update only.`);
+    out.merge = "data";
   }
   return out;
 }
@@ -151,7 +167,7 @@ export function checkResourceDefinition(def: unknown): ResourceDefinition {
   const out: Record<string, unknown> = { name };
   for (const key of Object.keys(def)) {
     if (key === "name") continue;
-    if (!(RESOURCE_VERBS as readonly string[]).includes(key)) return fail(`"${name}"`, `unknown key "${key}".`);
+    if (!(RESOURCE_VERBS as readonly string[]).includes(key)) return fail(`"${name}"`, unknownKey(key));
     out[key] = checkRoute(name, key as ResourceVerb, def[key]);
   }
   return deepFreeze(out) as unknown as ResourceDefinition;

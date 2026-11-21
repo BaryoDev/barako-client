@@ -79,16 +79,26 @@ create, update) and `content-types` (list, get, create). A module's resource is 
   body. `--dry-run` works only on a route the definition marks `dryRun: true`. On any other route it is a
   usage error that names the route, such as `PUT /api/invoices/{id}`, and nothing is sent.
 - `update` reads the row first and sends its version, or its ETag as If-Match, as `content update` does, and
-  stops with exit 3 when the row has neither. A row that holds its fields under `data` gets the fields
-  merged into `data`, so fields you do not name keep their values. Any other row gets the named fields as the
-  body. `--expect-version` works as in `content update`.
+  stops with exit 3 when the row has neither. A route with `"merge": "data"` (the built in `contents` update has it)
+  merges the fields into the row's `data`, so fields you do not name keep their values. Any other route gets the
+  named fields as top level fields, whatever the row holds. The body always ends with the id from the URL and the
+  version read. `--set id=...` with a different id is a usage error. `--expect-version` works as in `content update`.
 - `delete` needs `--confirm` equal to the id, and sends nothing without it. The message names the resource,
   such as `invoices id`. `contents` has no delete route, so `barako delete contents ...` is refused. Use
   `content erase`.
+- `list` sends no page size unless you pass `--limit`, because a file route may not take one. `--limit` together with `--query pageSize` is a usage error.
+- A `dryRun` field in `--set` or `--file` is a usage error, since it would act as `--dry-run`. Use the flag.
+- A 409, 412 or 428 on `update` re-reads the row and reports `details.currentVersion`, as `content update` does.
 - A 403 on these verbs names the route, such as `DELETE /api/invoices/{id}`.
 - `get` leaves out the `etag`, as `content get` does.
 
+The generic verbs need `@baryodev/barako-client` 0.6.0 or later. On an older client they stop with a usage error
+before any request, and the `content` commands keep working.
+
 ### Adding a resource from a file
+
+The definitions file is trusted. A route can point `create` or `update` at any `/api/` route and only `delete`
+asks for `--confirm`, so load only files you wrote or checked.
 
 Name a JSON file with `--resources FILE` or `BARAKO_RESOURCES`. The flag wins. The file is read once, must
 be at most 256 KB with at most 200 entries, and is checked before any request:
@@ -112,7 +122,7 @@ be at most 256 KB with at most 200 entries, and is checked before any request:
 on `create` and `update` only, `dryRun`. A path starts with `/api/`, has no `?`, `#`, `..`, `//`, `\`, `%`
 or whitespace, and its only placeholder is `{id}` as a whole segment. `get`, `update` and `delete` need it,
 `list` and `create` must not have it. Methods are GET for `list` and `get`, POST for `create`, PUT or PATCH for
-`update` and DELETE for `delete`. An unknown key, or any other fault, refuses the file with a usage error
+`update` and DELETE for `delete`. `update` may also hold `"merge": "data"`. `get`, `update` and `delete` hold `{id}` exactly once. An unknown key, or any other fault, refuses the file with a usage error
 naming the resource and the key.
 
 ## Output

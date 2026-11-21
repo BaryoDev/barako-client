@@ -1,12 +1,15 @@
-import { checkResourceDefinitions, type ResourceDefinition } from "@baryodev/barako-client";
+import type { ResourceDefinition } from "@baryodev/barako-client";
+import { resourceKit } from "./client-api";
 import { CliError } from "./output";
 
 export const MAX_RESOURCES_FILE_BYTES = 256 * 1024;
 export const MAX_RESOURCES_FILE_ENTRIES = 200;
 
 /** Reads extra resource definitions from a JSON file shaped `{ "resources": [ ... ] }`. A bad file is a
- *  usage error that names what failed, and it never echoes the file's text. */
-export function loadResourcesFile(path: string, readFile: (p: string) => string): ResourceDefinition[] {
+ *  usage error that names what failed. It echoes no file text beyond a resource name that passed the
+ *  name check and a key of at most 64 plain characters. `mod` is the client module, injectable for tests. */
+export function loadResourcesFile(path: string, readFile: (p: string) => string, mod?: object): ResourceDefinition[] {
+  const kit = resourceKit(mod);
   let text: string;
   try {
     text = readFile(path);
@@ -37,7 +40,7 @@ export function loadResourcesFile(path: string, readFile: (p: string) => string)
     throw new CliError("usage", `The resources file has more than ${MAX_RESOURCES_FILE_ENTRIES} entries.`);
   }
   try {
-    return checkResourceDefinitions(list);
+    return kit.checkResourceDefinitions(list);
   } catch (err) {
     throw new CliError("usage", `The resources file is refused. ${(err as Error).message}`);
   }

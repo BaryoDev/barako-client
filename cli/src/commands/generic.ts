@@ -1,20 +1,17 @@
-import {
-  BUILTIN_RESOURCES,
-  RESOURCE_VERBS,
-  routeLabel,
-  verbsOf,
-  type BarakoClient,
-  type ResourceCallOptions,
-  type ResourceDefinition,
-  type ResourceRoute,
-  type ResourceVerb,
+import type {
+  BarakoClient,
+  ResourceCallOptions,
+  ResourceDefinition,
+  ResourceRoute,
+  ResourceVerb,
 } from "@baryodev/barako-client";
+import { resourceKit, resourcesOf } from "../client-api";
 import { mergeData } from "../fields";
 import { CliError, toCliError } from "../output";
 import { commands, type ArgSpec, type Command } from "../registry";
 import { requireConfirm } from "./destructive";
 import { ALL_CAP, ALL_PAGE_SIZE, parseLimit } from "./read";
-import { currentVersionOf, FIELD_ARGS, patchFrom } from "./write";
+import { currentVersionOf, FIELD_ARGS, patchFrom, updateFailure } from "./write";
 
 const RESOURCE: ArgSpec = { name: "resource", kind: "positional", type: "string", required: true, description: "Resource name. Run `resources` to list them." };
 const ID: ArgSpec = { name: "id", kind: "positional", type: "string", required: true, description: "Row id." };
@@ -39,9 +36,11 @@ function strings(args: Record<string, unknown>, name: string): string[] {
 
 /** The resource by name, looked up in the client's table. The name is never put into a path. */
 function resourceOf(client: BarakoClient, args: Record<string, unknown>): ResourceDefinition {
-  const def = client.resources.definition(str(args, "resource")!);
+  resourceKit(); // a client without the resource API stops here, before any request
+  const table = resourcesOf(client);
+  const def = table.definition(str(args, "resource")!);
   if (!def) {
-    throw new CliError("usage", `Unknown resource. Valid resources: ${client.resources.names().join(", ")}.`);
+    throw new CliError("usage", `Unknown resource. Valid resources: ${table.names().join(", ")}.`);
   }
   return def;
 }
@@ -50,7 +49,7 @@ function resourceOf(client: BarakoClient, args: Record<string, unknown>): Resour
 function routeOf(def: ResourceDefinition, verb: ResourceVerb): ResourceRoute {
   const route = def[verb];
   if (!route) {
-    throw new CliError("usage", `Resource "${def.name}" has no ${verb}. It has: ${verbsOf(def).join(", ") || "none"}.`);
+    throw new CliError("usage", `Resource "${def.name}" has no ${verb}. It has: ${resourceKit().verbsOf(def).join(", ") || "none"}.`);
   }
   return route;
 }
@@ -59,7 +58,7 @@ function routeOf(def: ResourceDefinition, verb: ResourceVerb): ResourceRoute {
 function checkDryRun(args: Record<string, unknown>, route: ResourceRoute): boolean {
   if (args["dry-run"] !== true) return false;
   if (route.dryRun !== true) {
-    throw new CliError("usage", `${routeLabel(route)} does not take a dry run.`);
+    throw new CliError("usage", `${resourceKit().routeLabel(route)} does not take a dry run.`);
   }
   return true;
 }
@@ -67,13 +66,20 @@ function checkDryRun(args: Record<string, unknown>, route: ResourceRoute): boole
 /** One verb through the client. A 403 names the route, since the scope depends on the resource. */
 async function call<T>(client: BarakoClient, def: ResourceDefinition, verb: ResourceVerb, opts: ResourceCallOptions): Promise<T> {
   try {
-    return await client.resources.call<T>(def.name, verb, opts);
+    return await resourcesOf(client).call<T>(def.name, verb, opts);
   } catch (err) {
     const base = toCliError(err);
     if (base.status === 403) {
-      throw new CliError("forbidden", `The API key may not use ${routeLabel(def[verb]!)}.`, { status: 403, details: base.details });
+      throw new CliError("forbidden", `The API key may not use ${resourceKit().routeLabel(def[verb]!)}.`, { status: 403, details: base.details });
     }
     throw base;
+  }
+}
+
+/** A top level dryRun field would reach the server as if --dry-run had been asked for. */
+function refuseDryRunField(patch: Record<string, unknown>): void {
+  if (Object.prototype.hasOwnProperty.call(patch, "dryRun")) {
+    throw new CliError("usage", "A dryRun field cannot come from --set or --file. Use --dry-run, on a route that takes one.");
   }
 }
 
@@ -107,6 +113,7 @@ const resourcesCommand: Command = {
   offline: true,
   usesResources: true,
   async run({ fileResources }) {
+    const { BUILTIN_RESOURCES, RESOURCE_VERBS, routeLabel, verbsOf } = resourceKit();
     const entries = [
       ...BUILTIN_RESOURCES.map((def) => ({ def, source: "built in" })),
       ...(fileResources ?? []).map((def) => ({ def, source: "file" })),
@@ -152,6 +159,10 @@ const listCommand: Command = {
     routeOf(def, "list");
     const query: Record<string, string | number> = parseQuery(strings(args, "query"));
     const limit = args.limit === undefined ? undefined : parseLimit(args.limit);
+    // A route may not take a page size, so none is sent unless asked for. Two sources would clash.
+    if (limit !== undefined && Object.prototype.hasOwnProperty.call(query, "pageSize")) {
+      throw new CliError("usage", "--limit and --query pageSize both set the page size. Use one.");
+    }
 
     if (args.all !== true) {
       if (limit !== undefined) query.pageSize = limit;
@@ -197,6 +208,7 @@ const createCommand: Command = {
     const dryRun = checkDryRun(args, route);
     const { patch, any } = patchFrom(args, readFile);
     if (!any) throw new CliError("usage", "Nothing to send. Give --set, --set-file or --file.");
+    refuseDryRunField(patch);
     return call(client, def, "create", { body: patch, dryRun });
   },
 };
@@ -219,11 +231,17 @@ const updateCommand: Command = {
     // Before any request, so a refused dry run reads nothing.
     const dryRun = checkDryRun(args, route);
     if (!def.get) {
-      throw new CliError("usage", `Resource "${def.name}" has no get, so update cannot read the row first. It has: ${verbsOf(def).join(", ")}.`);
+      throw new CliError("usage", `Resource "${def.name}" has no get, so update cannot read the row first. It has: ${resourceKit().verbsOf(def).join(", ")}.`);
     }
     const id = str(args, "id")!;
     const { patch, any } = patchFrom(args, readFile);
     if (!any) throw new CliError("usage", "Nothing to change. Give --set, --set-file or --file.");
+    refuseDryRunField(patch);
+    const merging = route.merge === "data";
+    // The URL names the row. A body id that disagrees would aim the write at another row.
+    if (!merging && Object.prototype.hasOwnProperty.call(patch, "id") && String(patch.id) !== id) {
+      throw new CliError("usage", `--set id (${String(patch.id)}) does not match the id in the URL (${id}). Nothing was sent.`);
+    }
 
     const current = await call<Record<string, unknown> & { etag?: string }>(client, def, "get", { id });
     const reported = currentVersionOf(current);
@@ -243,14 +261,22 @@ const updateCommand: Command = {
       });
     }
 
-    // A row that keeps its fields under `data` (contents does) merges into it, so fields you do not
-    // name keep their values. Any other row gets the named fields as the body.
-    const held = current?.data;
-    const isHeld = typeof held === "object" && held !== null && !Array.isArray(held);
-    const body = isHeld
-      ? { id, data: mergeData(held as Record<string, unknown>, patch), version }
-      : { id, ...patch, version };
-    return call(client, def, "update", { id, body, dryRun, ...(current?.etag ? { ifMatch: current.etag } : {}) });
+    // A route marked `merge: "data"` keeps its fields under `data` (contents does), so the change
+    // is merged into the row's data and fields you do not name keep their values. Any other route
+    // gets the named fields as top level fields, whatever the row holds.
+    let body: Record<string, unknown>;
+    if (merging) {
+      const held = current?.data;
+      const base = typeof held === "object" && held !== null && !Array.isArray(held) ? (held as Record<string, unknown>) : {};
+      body = { id, data: mergeData(base, patch), version };
+    } else {
+      body = { ...patch, id, version };
+    }
+    try {
+      return await call(client, def, "update", { id, body, dryRun, ...(current?.etag ? { ifMatch: current.etag } : {}) });
+    } catch (err) {
+      throw await updateFailure(err, () => call(client, def, "get", { id }));
+    }
   },
 };
 
