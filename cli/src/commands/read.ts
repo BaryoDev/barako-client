@@ -8,9 +8,9 @@ const STATUSES: Record<string, ContentStatus> = {
   archived: ContentStatus.Archived,
   scheduled: ContentStatus.Scheduled,
 };
-const DEFAULT_LIMIT = 20;
-const ALL_PAGE_SIZE = 100;
-const ALL_CAP = 5000;
+export const DEFAULT_LIMIT = 20;
+export const ALL_PAGE_SIZE = 100;
+export const ALL_CAP = 5000;
 
 function str(args: Record<string, unknown>, name: string): string | undefined {
   const v = args[name];
@@ -26,7 +26,7 @@ function parseStatus(raw: string | undefined): ContentStatus | undefined {
   return n;
 }
 
-function parseLimit(v: unknown): number {
+export function parseLimit(v: unknown): number {
   if (v === undefined) return DEFAULT_LIMIT;
   if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
     throw new CliError("usage", "--limit must be a positive whole number.");

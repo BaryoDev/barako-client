@@ -1,10 +1,12 @@
 import { parseArgs } from "node:util";
-import type { BarakoClient } from "@baryodev/barako-client";
+import type { BarakoClient, ResourceDefinition } from "@baryodev/barako-client";
 import { readFileSync } from "node:fs";
 import { connect, type Env } from "./connect";
 import { CliError, render, scrubText, toCliError, type Outcome } from "./output";
 import { commands, type ArgSpec, type Command } from "./registry";
+import { loadResourcesFile } from "./resources-file";
 import "./commands/destructive";
+import "./commands/generic";
 import "./commands/read";
 import "./commands/status";
 import "./commands/write";
@@ -176,17 +178,24 @@ export async function run(argv: string[], env: Env, io: Io): Promise<number> {
       throw new CliError("usage", `Unknown output format "${output}". Use json or text.`);
     }
     format = output ?? "json";
+    let fileResources: ResourceDefinition[] | undefined;
+    if (found.command.usesResources) {
+      const flagged = typeof args.resources === "string" ? args.resources : undefined;
+      const path = flagged ?? (env.BARAKO_RESOURCES?.trim() || undefined);
+      if (path !== undefined) fileResources = loadResourcesFile(path, io.readFile);
+    }
     let client: BarakoClient = noClient;
     if (!found.command.offline) {
       const conn = connect(
         env,
         { url: args.__url as string | undefined, keyFile: args.__keyFile as string | undefined },
         io.readFile,
+        fileResources,
       );
       secrets.push(conn.secret);
       client = conn.client;
     }
-    const result = await found.command.run({ client, readFile: io.readFile }, args);
+    const result = await found.command.run({ client, readFile: io.readFile, fileResources }, args);
     outcome = { ok: true, result };
   } catch (err) {
     outcome = { ok: false, error: toCliError(err) };

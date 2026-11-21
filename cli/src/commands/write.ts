@@ -14,14 +14,14 @@ function list(args: Record<string, unknown>, name: string): string[] {
   return typeof v === "string" ? [v] : [];
 }
 
-const FIELD_ARGS: ArgSpec[] = [
+export const FIELD_ARGS: ArgSpec[] = [
   { name: "set", kind: "flag", type: "string[]", description: "Field value as Name=value, or Name:=json. Repeat for more fields." },
   { name: "set-file", kind: "flag", type: "string[]", description: "Field value read from a file, as Name=path. Repeat for more fields." },
   { name: "file", kind: "flag", type: "string", description: "A JSON file holding the fields." },
 ];
 
 /** Field values from --file, --set and --set-file. --set and --set-file win over --file. */
-function patchFrom(
+export function patchFrom(
   args: Record<string, unknown>,
   readFile: (p: string) => string,
 ): { patch: Record<string, unknown>; any: boolean } {
@@ -57,7 +57,7 @@ const createCommand: Command = {
   },
 };
 
-function currentVersionOf(entry: unknown): number | undefined {
+export function currentVersionOf(entry: unknown): number | undefined {
   const v = (entry as { version?: unknown } | undefined)?.version;
   return typeof v === "number" ? v : undefined;
 }

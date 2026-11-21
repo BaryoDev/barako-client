@@ -8,14 +8,15 @@ const CONFIRM: ArgSpec = {
   description: "Repeat the entry id to confirm. Must equal the id exactly.",
 };
 
-/** Stops before any call unless --confirm equals the id. Never echoes either value. */
-function requireConfirm(args: Record<string, unknown>, id: string): void {
+/** Stops before any call unless --confirm equals the id. Never echoes either value. `noun` names what
+ *  the id belongs to in the messages, such as "entry" or "invoice". */
+export function requireConfirm(args: Record<string, unknown>, id: string, noun: string): void {
   const confirm = args.confirm;
   if (typeof confirm !== "string") {
-    throw new CliError("usage", "This command is destructive. Pass --confirm with the entry id.");
+    throw new CliError("usage", `This command is destructive. Pass --confirm with the ${noun} id.`);
   }
   if (confirm !== id) {
-    throw new CliError("usage", "--confirm does not match the entry id. Nothing was changed.");
+    throw new CliError("usage", `--confirm does not match the ${noun} id. Nothing was changed.`);
   }
 }
 
@@ -41,7 +42,7 @@ const rollbackCommand: Command = {
   ],
   async run({ client }, args) {
     const id = args.id as string;
-    requireConfirm(args, id);
+    requireConfirm(args, id, "entry");
     try {
       return await client.contents.rollback(id, args.versionId as string);
     } catch (err) {
@@ -59,7 +60,7 @@ const eraseCommand: Command = {
   ],
   async run({ client }, args) {
     const id = args.id as string;
-    requireConfirm(args, id);
+    requireConfirm(args, id, "entry");
     try {
       await client.contents.erase(id);
     } catch (err) {

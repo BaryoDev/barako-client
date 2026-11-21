@@ -90,7 +90,7 @@ export function toCliError(err: unknown): CliError {
       return new CliError("network", err.message);
     }
     if (err instanceof TypeError) {
-      if (err.message.startsWith("Invalid path segment")) {
+      if (err.message.startsWith("Invalid path segment") || err.message.startsWith("Invalid resource")) {
         return new CliError("usage", err.message);
       }
       if (err.message === "fetch failed" || (err as { cause?: unknown }).cause !== undefined) {
