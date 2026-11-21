@@ -14,14 +14,14 @@ function list(args: Record<string, unknown>, name: string): string[] {
   return typeof v === "string" ? [v] : [];
 }
 
-const FIELD_ARGS: ArgSpec[] = [
+export const FIELD_ARGS: ArgSpec[] = [
   { name: "set", kind: "flag", type: "string[]", description: "Field value as Name=value, or Name:=json. Repeat for more fields." },
   { name: "set-file", kind: "flag", type: "string[]", description: "Field value read from a file, as Name=path. Repeat for more fields." },
   { name: "file", kind: "flag", type: "string", description: "A JSON file holding the fields." },
 ];
 
 /** Field values from --file, --set and --set-file. --set and --set-file win over --file. */
-function patchFrom(
+export function patchFrom(
   args: Record<string, unknown>,
   readFile: (p: string) => string,
 ): { patch: Record<string, unknown>; any: boolean } {
@@ -57,9 +57,29 @@ const createCommand: Command = {
   },
 };
 
-function currentVersionOf(entry: unknown): number | undefined {
+export function currentVersionOf(entry: unknown): number | undefined {
   const v = (entry as { version?: unknown } | undefined)?.version;
   return typeof v === "number" ? v : undefined;
+}
+
+/** The error for a failed update. A 409, 412 or 428 re-reads the row with `reread` and reports its
+ *  current version beside the server's answer. Anything else keeps the usual mapping. */
+export async function updateFailure(err: unknown, reread: () => Promise<unknown>): Promise<CliError> {
+  const status = (err as { status?: unknown } | null)?.status;
+  if (status === 409 || status === 412 || status === 428) {
+    let latest: number | undefined;
+    try {
+      latest = currentVersionOf(await reread());
+    } catch {
+      // Report the conflict without the version.
+    }
+    const base = toCliError(err);
+    return new CliError(codeForStatus(status), base.message, {
+      status,
+      details: { currentVersion: latest, server: base.details },
+    });
+  }
+  return toCliError(err);
 }
 
 const updateCommand: Command = {
@@ -108,21 +128,7 @@ const updateCommand: Command = {
     try {
       return await client.contents.update(id, { data, version }, opts);
     } catch (err) {
-      const status = (err as { status?: unknown } | null)?.status;
-      if (status === 409 || status === 412 || status === 428) {
-        let latest: number | undefined;
-        try {
-          latest = currentVersionOf(await client.contents.get(id));
-        } catch {
-          // Report the conflict without the version.
-        }
-        const base = toCliError(err);
-        throw new CliError(codeForStatus(status), base.message, {
-          status,
-          details: { currentVersion: latest, server: base.details },
-        });
-      }
-      throw toCliError(err);
+      throw await updateFailure(err, () => client.contents.get(id));
     }
   },
 };

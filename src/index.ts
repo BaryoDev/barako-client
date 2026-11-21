@@ -19,4 +19,14 @@ export type { BlocksResource } from "./resources/blocks";
 export type { PagesResource } from "./resources/pages";
 export type { PublicResource, PublicListQuery } from "./resources/public";
 
+export { BUILTIN_RESOURCES, RESOURCE_VERBS, checkResourceDefinitions, routeLabel, verbsOf } from "./resources";
+export type {
+  ResourceCallOptions,
+  ResourceDefinition,
+  ResourceMethod,
+  ResourceRoute,
+  ResourceVerb,
+  ResourcesApi,
+} from "./resources";
+
 export * from "./types";

@@ -68,7 +68,7 @@ await cms.me.switch("acme"); // swap to another tenant you belong to
 
 ## API
 
-`createClient(config)` returns a client with five resources.
+`createClient(config)` returns a client with five resources, and `cms.resources`, a table for generic calls.
 
 ```ts
 // auth (JWT flows)
@@ -114,6 +114,50 @@ await cms.public.bySlug("post", "my-slug");           // one entry, or null
 await cms.public.menu("main");                         // a nav menu, or null
 cms.public.fileUrl(fileId);                            // a public file URL for <img src>
 ```
+
+### Generic resources
+
+`cms.resources` is a table of resources, each a name and one route per verb, and a `call` that runs one
+verb through the client's own transport (auth, refresh, timeouts and the contract check apply). It is
+what `barako get`, `list`, `create`, `update` and `delete` use. The built in table holds `contents`
+(list, get, create, update, no delete, because `erase` stays its own call) and `content-types` (list,
+get, create). Add more with `resources` on `createClient`:
+
+```ts
+const cms = createClient({
+  baseUrl,
+  apiKey,
+  resources: [
+    {
+      name: "invoices",
+      list: { method: "GET", path: "/api/modules/invoices" },
+      get: { method: "GET", path: "/api/modules/invoices/{id}" },
+      create: { method: "POST", path: "/api/modules/invoices", dryRun: true },
+      update: { method: "PUT", path: "/api/modules/invoices/{id}" },
+      delete: { method: "DELETE", path: "/api/modules/invoices/{id}" },
+    },
+  ],
+});
+
+cms.resources.names();                    // ["contents", "content-types", "invoices"]
+cms.resources.definition("invoices");
+await cms.resources.call("invoices", "get", { id: "i1" });
+await cms.resources.call("invoices", "list", { query: { status: "open" } });
+await cms.resources.call("invoices", "create", { body: { total: 9 }, dryRun: true });
+await cms.resources.call("invoices", "update", { id: "i1", body: { total: 7 }, ifMatch: etag });
+```
+
+A route's `path` is a template. It starts with `/api/`, holds no `?`, `#`, `..`, `//`, `\`, `%` or
+whitespace, and its only placeholder is `{id}`, which must be a whole segment. `get`, `update` and
+`delete` need `{id}` once, `list` and `create` must not have it. `list` and `get` use GET, `create` POST,
+`update` PUT or PATCH and `delete` DELETE. `dryRun: true` is allowed on `create` and `update` only: the
+client then sends `dryRun: true` in the body when you pass `dryRun`. On any other route `call` with
+`dryRun` throws a `TypeError` naming the route, before any request. The id is encoded as one path
+segment, and query values are encoded like the other calls. A bad definition, or a name that is already
+built in, throws from `createClient` before any request. A get or an update that answers with an object
+also carries `etag` when the server sends one. `update` takes an optional `merge: "data"`, a hint for
+callers such as the `barako` CLI: the row keeps its fields under `data`, so a change is merged into it.
+The client itself does not read it. The built in `contents` update sets it.
 
 ### Public delivery
 
@@ -267,6 +311,7 @@ In CI, run it before the build so a breaking API change fails there and not in p
 | `timeouts` | `{ readMs, writeMs }`, headers and body. Reads default to 30000, writes to 0 (no limit) |
 | `signal` | An `AbortSignal` that aborts every request of the client |
 | `onContractMismatch` | Called once per surface when the API's contract is outside the supported range |
+| `resources` | Resource definitions to add to `cms.resources`. See Generic resources |
 
 ## License
 

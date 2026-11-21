@@ -48,6 +48,12 @@ Every command accepts `--url`, `--key-file` and `-o json|text`. The default is `
 | `content schedule <id>` | `barako content schedule 3f2a... --publish-at 2026-12-01T09:00:00Z` |
 | `content rollback <id> <versionId>` | `barako content rollback 3f2a... 7c1d... --confirm 3f2a...` |
 | `content erase <id>` | `barako content erase 3f2a... --confirm 3f2a...` |
+| `resources` | `barako resources` lists every resource, its verbs and its source (`built in` or `file`). Needs no connection. |
+| `get <resource> <id>` | `barako get contents 3f2a...` |
+| `list <resource>` | `barako list contents --query contentType=post --all` |
+| `create <resource>` | `barako create invoices --set total:=9 --dry-run` |
+| `update <resource> <id>` | `barako update invoices i1 --set total:=7` |
+| `delete <resource> <id>` | `barako delete invoices i1 --confirm i1` |
 
 Options worth knowing:
 
@@ -58,6 +64,66 @@ Options worth knowing:
 - `content publish`, `unpublish`, `archive`, `restore`: `--dry-run` checks on the client and writes nothing.
 - `content schedule`: sends both times on every call, so leaving out `--unpublish-at` clears it.
 - `content rollback` and `content erase`: `--confirm` must equal the entry id.
+
+## Generic verbs
+
+`get`, `list`, `create`, `update` and `delete` work on any resource in the client's resource table, with no
+command written per resource. `barako resources` lists the table. Built in: `contents` (list, get,
+create, update) and `content-types` (list, get, create). A module's resource is added from a file.
+
+- A resource name that is not in the table is a usage error that lists the valid names. A verb the
+  resource has no route for is a usage error that names the verbs it has.
+- `list`: `--query name=value` (repeat), `--limit` (sent as `pageSize`), and `--all` to follow every page up
+  to 5000 rows. `--all` needs a response with `items` and `hasNextPage`, and is a usage error on any other.
+- `create` and `update`: `--set`, `--set-file` and `--file` as in `content create`. The fields are the request
+  body. `--dry-run` works only on a route the definition marks `dryRun: true`. On any other route it is a
+  usage error that names the route, such as `PUT /api/invoices/{id}`, and nothing is sent.
+- `update` reads the row first and sends its version, or its ETag as If-Match, as `content update` does, and
+  stops with exit 3 when the row has neither. A route with `"merge": "data"` (the built in `contents` update has it)
+  merges the fields into the row's `data`, so fields you do not name keep their values. Any other route gets the
+  named fields as top level fields, whatever the row holds. The body always ends with the id from the URL and the
+  version read. `--set id=...` with a different id is a usage error. `--expect-version` works as in `content update`.
+- `delete` needs `--confirm` equal to the id, and sends nothing without it. The message names the resource,
+  such as `invoices id`. `contents` has no delete route, so `barako delete contents ...` is refused. Use
+  `content erase`.
+- `list` sends no page size unless you pass `--limit`, because a file route may not take one. `--limit` together with `--query pageSize` is a usage error.
+- A `dryRun` field in `--set` or `--file` is a usage error, since it would act as `--dry-run`. Use the flag.
+- A 409, 412 or 428 on `update` re-reads the row and reports `details.currentVersion`, as `content update` does.
+- A 403 on these verbs names the route, such as `DELETE /api/invoices/{id}`.
+- `get` leaves out the `etag`, as `content get` does.
+
+The generic verbs need `@baryodev/barako-client` 0.6.0 or later. On an older client they stop with a usage error
+before any request, and the `content` commands keep working.
+
+### Adding a resource from a file
+
+The definitions file is trusted. A route can point `create` or `update` at any `/api/` route and only `delete`
+asks for `--confirm`, so load only files you wrote or checked.
+
+Name a JSON file with `--resources FILE` or `BARAKO_RESOURCES`. The flag wins. The file is read once, must
+be at most 256 KB with at most 200 entries, and is checked before any request:
+
+```json
+{
+  "resources": [
+    {
+      "name": "invoices",
+      "list": { "method": "GET", "path": "/api/modules/invoices" },
+      "get": { "method": "GET", "path": "/api/modules/invoices/{id}" },
+      "create": { "method": "POST", "path": "/api/modules/invoices", "dryRun": true },
+      "update": { "method": "PUT", "path": "/api/modules/invoices/{id}" },
+      "delete": { "method": "DELETE", "path": "/api/modules/invoices/{id}" }
+    }
+  ]
+}
+```
+
+`name` matches `^[a-z][a-z0-9-]{0,63}$` and cannot be a built in name. Each route has `method`, `path` and,
+on `create` and `update` only, `dryRun`. A path starts with `/api/`, has no `?`, `#`, `..`, `//`, `\`, `%`
+or whitespace, and its only placeholder is `{id}` as a whole segment. `get`, `update` and `delete` need it,
+`list` and `create` must not have it. Methods are GET for `list` and `get`, POST for `create`, PUT or PATCH for
+`update` and DELETE for `delete`. `update` may also hold `"merge": "data"`. `get`, `update` and `delete` hold `{id}` exactly once. An unknown key, or any other fault, refuses the file with a usage error
+naming the resource and the key.
 
 ## Output
 
