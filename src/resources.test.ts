@@ -252,6 +252,21 @@ describe("resources.call", () => {
     expect(JSON.parse(fetchImpl.calls[1]!.init.body as string)).toEqual({ a: 1 });
   });
 
+  it("sends exactly { dryRun: true } for a dry run with no body, and no body without one", async () => {
+    const { cms, fetchImpl } = client();
+    await cms.resources.call("orders", "create", { dryRun: true });
+    expect(JSON.parse(fetchImpl.calls[0]!.init.body as string)).toEqual({ dryRun: true });
+    await cms.resources.call("orders", "create");
+    expect(fetchImpl.calls[1]!.init.body).toBeUndefined();
+  });
+
+  it("a generic get and list with no dry run time out on the read limit", async () => {
+    const hang = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+    const cms = createClient({ baseUrl: BASE, apiKey: "bcms_k", fetch: hang, resources: [ORDERS], timeouts: { readMs: 25 } });
+    await expect(cms.resources.call("orders", "get", { id: "o1" })).rejects.toMatchObject({ code: "timeout" });
+    await expect(cms.resources.call("orders", "list")).rejects.toMatchObject({ code: "timeout" });
+  });
+
   it("refuses dryRun on a route not marked, naming METHOD path, before any request", async () => {
     const { cms, fetchImpl } = client();
     await expect(cms.resources.call("orders", "update", { id: "o1", body: {}, dryRun: true })).rejects.toThrow(

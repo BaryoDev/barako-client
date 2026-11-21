@@ -167,6 +167,18 @@ describe("generic list", () => {
     expect(r.body.result.truncated).toBe(false);
   });
 
+  it("with --all keeps going on full pages when the server sends no hasNextPage", async () => {
+    const reply = (c: Call): Reply => {
+      const page = Number(new URL(c.url).searchParams.get("page"));
+      const n = page < 3 ? 100 : 7;
+      return { body: { items: Array.from({ length: n }, (_, i) => ({ id: `p${page}-${i}` })) } };
+    };
+    const r = await cli(["list", "invoices", "--all", ...WITH_FILE], { files: FILES, reply });
+    expect(r.calls).toHaveLength(3);
+    expect(r.body.result.items).toHaveLength(207);
+    expect(r.body.result.truncated).toBe(false);
+  });
+
   it("with --all stops at 5000 rows, the same cap as content list, and says it was cut", async () => {
     const reply = (c: Call): Reply => {
       const page = Number(new URL(c.url).searchParams.get("page"));

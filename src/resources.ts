@@ -228,14 +228,14 @@ export function resourcesApi(transport: Transport, extra?: readonly ResourceDefi
         throw new TypeError(`Invalid resource call: ${routeLabel(route)} takes no id.`);
       }
       const path = holdsId ? route.path.replace("{id}", () => pathSegment(opts!.id!)) : route.path;
-      const body = opts?.body === undefined ? undefined : dryRun ? { ...opts.body, dryRun: true } : opts.body;
+      const body = dryRun ? { ...(opts?.body ?? {}), dryRun: true } : opts?.body;
       const { body: out, headers } = await transport.requestWithHeaders<T>({
         method: route.method,
         path,
         query: opts?.query,
         body,
         headers: opts?.ifMatch ? { "If-Match": opts.ifMatch } : undefined,
-        read: dryRun, // a dry run saves nothing, so it takes the read timeout
+        read: dryRun ? true : undefined, // a dry run saves nothing, so it takes the read timeout
         ...callOpts(opts),
       });
       const etag = headers.get("ETag");

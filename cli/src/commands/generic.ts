@@ -186,7 +186,8 @@ const listCommand: Command = {
         items.length = Math.min(items.length, ALL_CAP);
         break;
       }
-      if (!res.hasNextPage) break;
+      const more = typeof res.hasNextPage === "boolean" ? res.hasNextPage : res.items.length === ALL_PAGE_SIZE;
+      if (!more) break;
       if (res.items.length === 0) {
         // An empty page with more to come means the listing is incomplete.
         truncated = true;
