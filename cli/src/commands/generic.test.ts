@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { BarakoClient } from "@baryodev/barako-client";
 import { run } from "../main";
+import { toCliError } from "../output";
 import { commands } from "../registry";
 import { loadResourcesFile } from "../resources-file";
 
@@ -727,5 +728,14 @@ describe("generic list page size", () => {
   it("sends no page size by default", async () => {
     const r = await cli(["list", "invoices", ...WITH_FILE], { files: FILES });
     expect(r.calls[0]!.url).toBe(`${BASE}/api/modules/invoices`);
+  });
+});
+
+describe("an Invalid resource TypeError from the client", () => {
+  it("maps to a usage error, as an Invalid path segment one does", () => {
+    const e = toCliError(new TypeError("Invalid resource call: unknown resource."));
+    expect(e.code).toBe("usage");
+    expect(e.message).toBe("Invalid resource call: unknown resource.");
+    expect(toCliError(new TypeError("Something else entirely")).code).not.toBe("usage");
   });
 });
