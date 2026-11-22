@@ -535,3 +535,83 @@ describe("authoring calls", () => {
     expect(f.calls[1].url).toBe(`${BASE}/api/pages/tree`);
   });
 });
+
+// --- plain http refusal ------------------------------------------------------
+
+const page = { items: [], page: 1, pageSize: 10, totalCount: 0 };
+
+describe("plain http", () => {
+  const REMOTE = "http://cms.example.com/api";
+  const refusal = /allowInsecureHttp/;
+
+  it("refuses an API key, a token or a refresh token to a remote host", () => {
+    const fetchImpl = mockFetch([{ body: {} }]);
+    expect(() => createClient({ baseUrl: REMOTE, apiKey: "bcms_x", fetch: fetchImpl })).toThrow(refusal);
+    expect(() => createClient({ baseUrl: REMOTE, token: "t", fetch: fetchImpl })).toThrow(refusal);
+    expect(() => createClient({ baseUrl: REMOTE, refreshToken: "r", fetch: fetchImpl })).toThrow(refusal);
+    const store = memoryStore({ token: "t" });
+    expect(() => createClient({ baseUrl: REMOTE, storage: store, fetch: fetchImpl })).toThrow(refusal);
+    expect(fetchImpl.calls).toHaveLength(0);
+  });
+
+  it("refuses a login before it sends the password", async () => {
+    const fetchImpl = mockFetch([{ body: { token: "t", refreshToken: "r" } }]);
+    const cms = createClient({ baseUrl: REMOTE, fetch: fetchImpl });
+    await expect(cms.auth.login("u", "p")).rejects.toThrow(refusal);
+    expect(fetchImpl.calls).toHaveLength(0);
+  });
+
+  it("refuses a refresh and a logout with a refresh token, from a store filled after construction", async () => {
+    const fetchImpl = mockFetch([{ body: {} }]);
+    const store = memoryStore();
+    const cms = createClient({ baseUrl: REMOTE, storage: store, fetch: fetchImpl });
+    store.set({ token: "t", refreshToken: "r" });
+    await expect(cms.auth.refresh()).rejects.toThrow(refusal);
+    await expect(cms.auth.logout()).rejects.toThrow(refusal);
+    await expect(cms.contents.list({ contentType: "post" })).rejects.toThrow(refusal);
+    expect(fetchImpl.calls).toHaveLength(0);
+  });
+
+  it("refuses the automatic token refresh before it sends the refresh token", async () => {
+    const fetchImpl = mockFetch([{ status: 401 }]);
+    const store = memoryStore();
+    const cms = createClient({ baseUrl: REMOTE, storage: store, fetch: fetchImpl });
+    store.set({ refreshToken: "r" }); // no access token, so the first request carries no credential
+    await expect(cms.contents.list({ contentType: "post" })).rejects.toThrow(refusal);
+    expect(fetchImpl.calls).toHaveLength(1);
+    expect(fetchImpl.calls[0]!.url).not.toContain("/auth/refresh");
+  });
+
+  it("allows https", async () => {
+    const fetchImpl = mockFetch([{ body: page }]);
+    const cms = createClient({ baseUrl: BASE, apiKey: "bcms_x", fetch: fetchImpl });
+    await cms.contents.list({ contentType: "post" });
+    expect(fetchImpl.calls).toHaveLength(1);
+  });
+
+  it("allows each loopback form", async () => {
+    for (const base of ["http://localhost:5188", "http://127.0.0.1:5188", "http://127.8.9.10", "http://[::1]:5188"]) {
+      const fetchImpl = mockFetch([{ body: page }]);
+      const cms = createClient({ baseUrl: base, apiKey: "bcms_x", fetch: fetchImpl });
+      await cms.contents.list({ contentType: "post" });
+      expect(authHeader(fetchImpl.calls[0]!.init)).toBe("Bearer bcms_x");
+    }
+  });
+
+  it("allows a remote host with allowInsecureHttp", async () => {
+    const fetchImpl = mockFetch([{ body: page }, { body: { token: "t", refreshToken: "r" } }]);
+    const cms = createClient({ baseUrl: "http://api:8080", apiKey: "bcms_x", allowInsecureHttp: true, fetch: fetchImpl });
+    await cms.contents.list({ contentType: "post" });
+    const jwtClient = createClient({ baseUrl: "http://api:8080", allowInsecureHttp: true, fetch: fetchImpl });
+    await jwtClient.auth.login("u", "p");
+    expect(fetchImpl.calls).toHaveLength(2);
+  });
+
+  it("allows http with no credential, for public reads", async () => {
+    const fetchImpl = mockFetch([{ body: page }]);
+    const cms = createClient({ baseUrl: REMOTE, fetch: fetchImpl });
+    await cms.public.list("post");
+    expect(fetchImpl.calls).toHaveLength(1);
+    expect(authHeader(fetchImpl.calls[0]!.init)).toBeUndefined();
+  });
+});

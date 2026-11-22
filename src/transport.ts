@@ -16,6 +16,8 @@ export interface RequestOptions extends CallOptions {
   /** Take the read timeout default, but keep the method's outcome note. For a request that may
    *  change state yet must not wait forever (the token refresh). Ignored when `read` is set. */
   readDeadline?: boolean;
+  /** The body carries a credential (a login or a refresh). Checked against the plain http guard. */
+  credentialed?: boolean;
 }
 
 /** The HTTP layer: builds requests, attaches auth + tenant headers, retries once after a recovered
@@ -28,6 +30,7 @@ export class Transport {
     private readonly auth: Authenticator,
     private readonly fetchImpl: typeof fetch,
     private readonly limits: HttpLimits = { timeouts: { readMs: 0, writeMs: 0 } },
+    private readonly guard: () => void = () => {},
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
@@ -69,6 +72,10 @@ export class Transport {
     if (tenant) headers["X-Tenant"] = tenant;
     // Per-request headers win (e.g. X-Tenant on login before a token exists).
     Object.assign(headers, opts.headers);
+    // Anything that carries a credential passes the plain http guard first, so no path skips it.
+    if (opts.credentialed || Object.keys(headers).some((k) => k.toLowerCase() === "authorization")) {
+      this.guard();
+    }
 
     let body: string | undefined;
     if (opts.body !== undefined) {

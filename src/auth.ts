@@ -113,6 +113,7 @@ export class JwtAuthenticator implements Authenticator {
     private readonly fetchImpl: typeof fetch,
     private readonly tenantOverride?: string,
     private readonly limits: HttpLimits = { timeouts: { readMs: 0, writeMs: 0 } },
+    private readonly guard: () => void = () => {},
   ) {}
 
   authHeader() {
@@ -141,6 +142,7 @@ export class JwtAuthenticator implements Authenticator {
     // Carry the tenant into the refresh, or the new token silently reverts to the default tenant.
     const tenant = this.tenantOverride ?? tenantOfToken(token) ?? undefined;
     const path = "/api/auth/refresh";
+    this.guard();
     let res;
     try {
       res = await fetchText(

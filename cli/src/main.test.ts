@@ -32,7 +32,7 @@ describe("run", () => {
     expect(body.ok).toBe(true);
     expect(Array.isArray(body.result.commands)).toBe(true);
     expect(body.result.commands.map((c: { name: string }) => c.name)).toContain("commands");
-    expect(body.result.globals.map((g: { name: string }) => g.name)).toEqual(["url", "key-file", "output"]);
+    expect(body.result.globals.map((g: { name: string }) => g.name)).toEqual(["url", "key-file", "allow-http", "output"]);
     for (const item of body.result.commands) {
       expect(item).toHaveProperty("name");
       expect(item).toHaveProperty("summary");
@@ -76,5 +76,22 @@ describe("run", () => {
     const all = h.out.map((o) => o.text).join("");
     expect(all).not.toContain("env-key-111");
     expect(all).not.toContain("file-key-999");
+  });
+
+  it("refuses the key over remote http, and --allow-http and BARAKO_ALLOW_HTTP lift it", async () => {
+    const env = { BARAKO_API_KEY: "k", BARAKO_URL: "http://api.invalid" };
+    const h = harness();
+    expect(await run(["content", "list", "post"], env, h.io)).toBe(1);
+    expect(JSON.parse(h.out[0]!.text).error.message).toContain("--allow-http");
+
+    // With the opt-in the run gets past connect and fails on the network (.invalid never resolves).
+    for (const [argv, e] of [
+      [["content", "list", "post", "--allow-http"], env],
+      [["content", "list", "post"], { ...env, BARAKO_ALLOW_HTTP: "1" }],
+    ] as const) {
+      const h2 = harness();
+      await run([...argv], e, h2.io);
+      expect(JSON.parse(h2.out[0]!.text).error.message).not.toContain("Refusing");
+    }
   });
 });

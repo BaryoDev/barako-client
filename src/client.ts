@@ -6,7 +6,7 @@ import {
   type TokenStore,
 } from "./auth";
 import { createContractMonitor, type ContractMismatch } from "./contract";
-import { resolveTimeouts, type HttpLimits, type Timeouts } from "./http";
+import { plainHttpGuard, resolveTimeouts, type HttpLimits, type Timeouts } from "./http";
 import { Transport } from "./transport";
 import { resourcesApi, type ResourceDefinition, type ResourcesApi } from "./resources";
 import { authResource, type AuthResource } from "./resources/auth";
@@ -31,6 +31,11 @@ export interface ClientConfig {
   storage?: TokenStore;
   /** Custom fetch (for Node <18, tests, or interception). Defaults to the global fetch. */
   fetch?: typeof fetch;
+  /** Allow a credential (API key, token, or a login) over plain `http:` to a host that is not
+   *  loopback. Off by default: `createClient` throws when a credential is configured, and a login or
+   *  refresh throws before it sends. Set it only on a trusted network, such as a compose network that
+   *  calls `http://api:8080`. Loopback (`localhost`, `127.x.x.x`, `[::1]`) and `https:` never need it. */
+  allowInsecureHttp?: boolean;
   /** Timeouts in milliseconds, covering headers and body. Reads (GET, HEAD) default to 30000. Writes
    *  (every other method) default to 0, no limit. 0 turns one off. A request that runs out gets a
    *  BarakoError with code `timeout`. The token refresh counts as a read. */
@@ -97,6 +102,8 @@ export function createClient(config: ClientConfig): BarakoClient {
     throw new Error("createClient: no global fetch here, pass config.fetch.");
   }
 
+  const guard = plainHttpGuard(config.baseUrl, config.allowInsecureHttp);
+
   const timeouts = resolveTimeouts(config.timeouts);
   const limits: HttpLimits = {
     timeouts,
@@ -107,11 +114,15 @@ export function createClient(config: ClientConfig): BarakoClient {
   const store =
     config.storage ?? memoryStore({ token: config.token, refreshToken: config.refreshToken });
 
+  // A credential held now must not go out over plain http. A login later is checked when it is sent.
+  const held = store.get();
+  if (config.apiKey || held.token || held.refreshToken) guard();
+
   const auth: Authenticator = config.apiKey
     ? new ApiKeyAuthenticator(config.apiKey)
-    : new JwtAuthenticator(store, baseUrl, fetchImpl, config.tenant, limits);
+    : new JwtAuthenticator(store, baseUrl, fetchImpl, config.tenant, limits, guard);
 
-  const transport = new Transport(config.baseUrl, auth, fetchImpl, limits);
+  const transport = new Transport(config.baseUrl, auth, fetchImpl, limits, guard);
   const resources = resourcesApi(transport, config.resources);
 
   return {

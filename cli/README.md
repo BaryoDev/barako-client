@@ -22,6 +22,11 @@ export BARAKO_API_KEY=bcms_...
 `BARAKO_API_KEY`. There is no flag that takes the key itself, so it stays out of shell history. The key
 is never printed. The server works out the tenant from the key.
 
+The CLI refuses to send the key over plain `http://` to a host that is not loopback (`localhost`,
+`127.x.x.x`, `[::1]`). Use `https://`. If the network is trusted, for example a server-side caller
+inside a compose network that reaches `http://api:8080`, pass `--allow-http` or set
+`BARAKO_ALLOW_HTTP=1`. A compose service name is not loopback, so that case needs the opt-in.
+
 A key needs `content:read` to read and `content:write` to write. `content rollback` and
 `content erase` also need `content:destructive`.
 

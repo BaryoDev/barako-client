@@ -244,3 +244,33 @@ export function waitBounded<T>(
 export function callOpts(opts?: CallOptions): CallOptions {
   return { signal: opts?.signal, timeoutMs: opts?.timeoutMs };
 }
+
+/** True for `localhost`, any `127.x.x.x` address and `[::1]`, the hosts where plain http stays on the machine. */
+export function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === "localhost" || h === "[::1]" || /^127(\.\d{1,3}){3}$/.test(h);
+}
+
+/**
+ * Returns a check that throws when a credential would travel over plain http to a host that is not
+ * loopback, unless `allow` is set. A URL that is not absolute (a browser path) or is not http always
+ * passes. Call the check before anything that carries a credential.
+ */
+export function plainHttpGuard(baseUrl: string, allow: boolean | undefined): () => void {
+  let refuse = false;
+  if (!allow) {
+    try {
+      const u = new URL(baseUrl);
+      refuse = u.protocol === "http:" && !isLoopbackHost(u.hostname);
+    } catch {
+      refuse = false;
+    }
+  }
+  return () => {
+    if (refuse) {
+      throw new Error(
+        "Refusing to send a credential over plain http to a host that is not loopback. Use https, or set allowInsecureHttp: true if the network is trusted.",
+      );
+    }
+  };
+}

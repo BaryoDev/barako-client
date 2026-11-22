@@ -308,6 +308,7 @@ In CI, run it before the build so a breaking API change fails there and not in p
 | `tenant` | Force the X-Tenant for JWT auth (otherwise read from the token) |
 | `storage` | Where JWT tokens live: `memoryStore()` (default) or `browserStore()` |
 | `fetch` | Custom fetch, for interception or a runtime without a global one |
+| `allowInsecureHttp` | `true` lets a credential go over plain `http:` to a host that is not loopback. Off by default: `createClient` throws when a key or token is set, and a login or refresh throws before it sends. Loopback (`localhost`, `127.x.x.x`, `[::1]`) and `https:` need no opt-in. Server-side code in a compose network that calls `http://api:8080` needs it |
 | `timeouts` | `{ readMs, writeMs }`, headers and body. Reads default to 30000, writes to 0 (no limit) |
 | `signal` | An `AbortSignal` that aborts every request of the client |
 | `onContractMismatch` | Called once per surface when the API's contract is outside the supported range |
