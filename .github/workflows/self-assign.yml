@@ -16,7 +16,7 @@ on:
     types: [created]
 
 permissions:
-  issues: write
+  contents: read
 
 # One claim at a time per issue. The job reads the assignee list and then adds to it, so two
 # comments arriving together could both see it empty and both assign, leaving two people who each
@@ -27,6 +27,8 @@ concurrency:
 
 jobs:
   take:
+    permissions:
+      issues: write
     # Issues only. This is a cheap pre-filter; the script below checks the command exactly, because
     # `startsWith` alone would also fire on `/takeover` and quietly assign someone who was arguing
     # against the idea.
@@ -35,7 +37,7 @@ jobs:
       (startsWith(github.event.comment.body, '/take') || startsWith(github.event.comment.body, '.take'))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -89,13 +91,15 @@ jobs:
   # are the problem: "I don't think I'd like to work on this" contains "like to work on this". A
   # wrong assignment has to be noticed and undone by a human; a wrong hint costs one comment.
   hint:
+    permissions:
+      issues: write
     if: >
       !github.event.issue.pull_request &&
       !startsWith(github.event.comment.body, '/take') &&
       !startsWith(github.event.comment.body, '.take')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const { owner, repo } = context.repo;

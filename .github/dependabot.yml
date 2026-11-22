@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # One lockfile at the root covers the client and the cli workspace.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Two pull requests, never one per package: routine bumps in one, majors in another. Majors
+      # are kept separate because they are the ones that need reading.
+      npm:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      npm-major:
+        patterns: ["*"]
+        update-types: ["major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]

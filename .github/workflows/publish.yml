@@ -1,6 +1,6 @@
 name: Publish
 
-# Publishes to npmjs via trusted publishing (OIDC — no NPM_TOKEN, provenance automatic), mirrors to
+# Publishes to npmjs via trusted publishing (OIDC, no NPM_TOKEN; provenance is also requested explicitly), mirrors to
 # GitHub Packages, then announces to the org discussions. Trigger by publishing a GitHub Release.
 # One release can publish the client, the CLI, or both. A package whose name@version is already on
 # the registry is skipped, so bumping one version does not fail the other.
@@ -9,6 +9,9 @@ on:
     types: [published]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,6 +19,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -29,6 +34,31 @@ jobs:
           mkdir -p out
           npm pack --pack-destination ./out
           npm pack -w cli --pack-destination ./out
+      # CycloneDX SBOMs from the lockfile, production dependencies only, one per package. npm names
+      # the repo root after the checkout folder and lists the cli workspace beside the client it
+      # resolves from the registry, so one raw SBOM is cut per package by scripts/sbom-for.sh: the
+      # package's own component becomes the subject, and only what it depends on is kept. The raw
+      # file stays out of sbom/ because the upload and the release attach take sbom/*.cdx.json.
+      - name: Generate SBOMs
+        run: |
+          set -euo pipefail
+          mkdir -p sbom
+          RAW="$RUNNER_TEMP/raw.cdx.json"
+          npm sbom --sbom-format cyclonedx --omit dev -w cli > "$RAW"
+          scripts/sbom-for.sh "$RAW" package.json > sbom/barako-client.cdx.json
+          scripts/sbom-for.sh "$RAW" cli/package.json > sbom/barako.cdx.json
+          for pair in "sbom/barako-client.cdx.json package.json" "sbom/barako.cdx.json cli/package.json"; do
+            set -- $pair
+            [ -s "$1" ] || { echo "::error::$1 is empty"; exit 1; }
+            want=$(jq -r '"\(.name) \(.version)"' "$2")
+            got=$(jq -r '"\(.metadata.component.name) \(.metadata.component.version)"' "$1")
+            [ "$got" = "$want" ] || { echo "::error::$1 is about '$got', not '$want'"; exit 1; }
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom
+          path: sbom/*.cdx.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: package
@@ -74,7 +104,7 @@ jobs:
               echo "$name@$version is already on npm, skipping"
               echo "$key=false" >> "$GITHUB_OUTPUT"
             else
-              npm publish "$tgz" --access public
+              npm publish "$tgz" --access public --provenance
               echo "$key=true" >> "$GITHUB_OUTPUT"
             fi
           done
@@ -99,8 +129,28 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # The SBOMs go on the release itself, so a user can read them without a workflow run's artifacts.
+  attach-sbom:
+    needs: publish
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # upload release assets
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sbom
+          path: sbom
+      - name: Upload the SBOMs to the release
+        run: gh release upload "$TAG" sbom/*.cdx.json --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+
   announce:
     needs: publish
+    permissions: {}
     if: ${{ !cancelled() && needs.publish.outputs.client == 'true' }}
     uses: BaryoDev/.github/.github/workflows/announce.yml@7d9cbb97e4a8fea9d5244ab6de9b06cb2eab8229 # main
     with:
@@ -114,6 +164,7 @@ jobs:
 
   announce-cli:
     needs: publish
+    permissions: {}
     if: ${{ !cancelled() && needs.publish.outputs.cli == 'true' }}
     uses: BaryoDev/.github/.github/workflows/announce.yml@7d9cbb97e4a8fea9d5244ab6de9b06cb2eab8229 # main
     with:

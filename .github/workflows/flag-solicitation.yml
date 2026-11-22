@@ -11,10 +11,12 @@ on:
     types: [created]
 
 permissions:
-  issues: write
+  contents: read
 
 jobs:
   flag:
+    permissions:
+      issues: write
     if: github.event.issue.pull_request == null
     runs-on: ubuntu-latest
     steps:
