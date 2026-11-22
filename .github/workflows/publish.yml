@@ -34,17 +34,25 @@ jobs:
           mkdir -p out
           npm pack --pack-destination ./out
           npm pack -w cli --pack-destination ./out
-      # CycloneDX SBOMs from the lockfile, production dependencies only, one per package.
+      # CycloneDX SBOMs from the lockfile, production dependencies only, one per package. npm names
+      # the repo root after the checkout folder and lists the cli workspace beside the client it
+      # resolves from the registry, so one raw SBOM is cut per package by scripts/sbom-for.sh: the
+      # package's own component becomes the subject, and only what it depends on is kept. The raw
+      # file stays out of sbom/ because the upload and the release attach take sbom/*.cdx.json.
       - name: Generate SBOMs
         run: |
           set -euo pipefail
           mkdir -p sbom
-          npm sbom --sbom-format cyclonedx --omit dev > sbom/barako-client.cdx.json
-          npm sbom --sbom-format cyclonedx --omit dev -w cli > sbom/barako.cdx.json
-          for f in sbom/*.cdx.json; do
-            [ -s "$f" ] || { echo "::error::$f is empty"; exit 1; }
-            n=$(jq '.components | length' "$f")
-            [ "$n" -gt 0 ] || { echo "::error::$f lists no components"; exit 1; }
+          RAW="$RUNNER_TEMP/raw.cdx.json"
+          npm sbom --sbom-format cyclonedx --omit dev -w cli > "$RAW"
+          scripts/sbom-for.sh "$RAW" package.json > sbom/barako-client.cdx.json
+          scripts/sbom-for.sh "$RAW" cli/package.json > sbom/barako.cdx.json
+          for pair in "sbom/barako-client.cdx.json package.json" "sbom/barako.cdx.json cli/package.json"; do
+            set -- $pair
+            [ -s "$1" ] || { echo "::error::$1 is empty"; exit 1; }
+            want=$(jq -r '"\(.name) \(.version)"' "$2")
+            got=$(jq -r '"\(.metadata.component.name) \(.metadata.component.version)"' "$1")
+            [ "$got" = "$want" ] || { echo "::error::$1 is about '$got', not '$want'"; exit 1; }
           done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
