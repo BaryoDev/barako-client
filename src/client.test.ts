@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createClient, BarakoError, tenantOfToken, memoryStore, ContentStatus } from "./index";
+import { createClient, BarakoError, tenantOfToken, memoryStore, ContentStatus, type TokenStore } from "./index";
 
 // --- helpers ---------------------------------------------------------------
 
@@ -561,13 +561,39 @@ describe("plain http", () => {
     expect(fetchImpl.calls).toHaveLength(0);
   });
 
-  it("refuses a refresh and a logout with a refresh token, from a store filled after construction", async () => {
+  it("refuses a refresh and a logout that carry only a refresh token, from a store filled after construction", async () => {
     const fetchImpl = mockFetch([{ body: {} }]);
     const store = memoryStore();
     const cms = createClient({ baseUrl: REMOTE, storage: store, fetch: fetchImpl });
-    store.set({ token: "t", refreshToken: "r" });
+    // No access token, so no Authorization header: only the refresh token in the body is refused.
+    store.set({ refreshToken: "r" });
     await expect(cms.auth.refresh()).rejects.toThrow(refusal);
     await expect(cms.auth.logout()).rejects.toThrow(refusal);
+    expect(fetchImpl.calls).toHaveLength(0);
+  });
+
+  it("refuses a request with a token from a store filled after construction", async () => {
+    const fetchImpl = mockFetch([{ body: page }]);
+    const store = memoryStore();
+    const cms = createClient({ baseUrl: REMOTE, storage: store, fetch: fetchImpl });
+    store.set({ token: "t" });
+    await expect(cms.contents.list({ contentType: "post" })).rejects.toThrow(refusal);
+    expect(fetchImpl.calls).toHaveLength(0);
+  });
+
+  it("builds with a store that cannot be read yet, and refuses its token when it is sent", async () => {
+    const fetchImpl = mockFetch([{ body: page }]);
+    let ready = false;
+    const store: TokenStore = {
+      get: () => {
+        if (!ready) throw new ReferenceError("localStorage is not defined");
+        return { token: "t" };
+      },
+      set: () => {},
+      clear: () => {},
+    };
+    const cms = createClient({ baseUrl: REMOTE, storage: store, fetch: fetchImpl });
+    ready = true;
     await expect(cms.contents.list({ contentType: "post" })).rejects.toThrow(refusal);
     expect(fetchImpl.calls).toHaveLength(0);
   });

@@ -76,6 +76,16 @@ function hasCredentials(url: string): boolean {
   }
 }
 
+/** True when the store holds a token or a refresh token. A store that throws on read holds none yet. */
+function heldCredential(store: TokenStore): boolean {
+  try {
+    const held = store.get();
+    return Boolean(held.token || held.refreshToken);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Create a barakoCMS client. Framework-agnostic; runs anywhere fetch does.
  *
@@ -115,8 +125,9 @@ export function createClient(config: ClientConfig): BarakoClient {
     config.storage ?? memoryStore({ token: config.token, refreshToken: config.refreshToken });
 
   // A credential held now must not go out over plain http. A login later is checked when it is sent.
-  const held = store.get();
-  if (config.apiKey || held.token || held.refreshToken) guard();
+  // A store that cannot be read yet (the browser store during server rendering) is skipped here; every
+  // request that carries a credential is checked again when it is sent.
+  if (config.apiKey || heldCredential(store)) guard();
 
   const auth: Authenticator = config.apiKey
     ? new ApiKeyAuthenticator(config.apiKey)
