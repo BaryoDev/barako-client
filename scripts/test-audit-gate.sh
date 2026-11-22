@@ -119,7 +119,9 @@ mkdir -p "$T/p-mixed/workflows" "$T/p-two/workflows"
 printf 'jobs:\n  a:\n    steps: [{uses: actions/checkout@%s}, {uses: actions/setup-node@v7}]\n' "$sha" >"$T/p-mixed/workflows/a.yml"
 printf 'jobs:\n  a:\n    steps: [{uses: actions/checkout@%s}, {uses: actions/setup-node@%s}]\n' "$sha" "$sha" >"$T/p-two/workflows/a.yml"
 pins_check "a later tag on a flow line fails"          1 "$T/p-mixed/workflows"
-if bash scripts/check-action-pins.sh "$T/p-mixed/workflows" 2>&1 | grep -q 'actions/setup-node@v7'; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: the later tag is named"; fi
+# The script exits 1 here, so its output is read first; under pipefail that exit would fail the grep pipeline.
+mixed_out=$(bash scripts/check-action-pins.sh "$T/p-mixed/workflows" 2>&1 || true)
+if grep -q 'actions/setup-node@v7' <<<"$mixed_out"; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: the later tag is named"; fi
 pins_check "two SHA-pinned flow maps pass"             0 "$T/p-two/workflows"
 if bash scripts/check-action-pins.sh "$T/p-two/workflows" 2>&1 | grep -q '2 checked, 0 not pinned'; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: two flow maps count 2 checked"; fi
 pins_check "this repository's workflows pass"          0 .github/workflows
