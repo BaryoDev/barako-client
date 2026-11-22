@@ -1,6 +1,6 @@
 name: Publish
 
-# Publishes to npmjs via trusted publishing (OIDC — no NPM_TOKEN, provenance automatic), mirrors to
+# Publishes to npmjs via trusted publishing (OIDC, no NPM_TOKEN; provenance is also requested explicitly), mirrors to
 # GitHub Packages, then announces to the org discussions. Trigger by publishing a GitHub Release.
 # One release can publish the client, the CLI, or both. A package whose name@version is already on
 # the registry is skipped, so bumping one version does not fail the other.
@@ -8,6 +8,9 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -29,6 +32,23 @@ jobs:
           mkdir -p out
           npm pack --pack-destination ./out
           npm pack -w cli --pack-destination ./out
+      # CycloneDX SBOMs from the lockfile, production dependencies only, one per package.
+      - name: Generate SBOMs
+        run: |
+          set -euo pipefail
+          mkdir -p sbom
+          npm sbom --sbom-format cyclonedx --omit dev > sbom/barako-client.cdx.json
+          npm sbom --sbom-format cyclonedx --omit dev -w cli > sbom/barako.cdx.json
+          for f in sbom/*.cdx.json; do
+            [ -s "$f" ] || { echo "::error::$f is empty"; exit 1; }
+            n=$(jq '.components | length' "$f")
+            [ "$n" -gt 0 ] || { echo "::error::$f lists no components"; exit 1; }
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom
+          path: sbom/*.cdx.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: package
@@ -74,7 +94,7 @@ jobs:
               echo "$name@$version is already on npm, skipping"
               echo "$key=false" >> "$GITHUB_OUTPUT"
             else
-              npm publish "$tgz" --access public
+              npm publish "$tgz" --access public --provenance
               echo "$key=true" >> "$GITHUB_OUTPUT"
             fi
           done
@@ -101,6 +121,7 @@ jobs:
 
   announce:
     needs: publish
+    permissions: {}
     if: ${{ !cancelled() && needs.publish.outputs.client == 'true' }}
     uses: BaryoDev/.github/.github/workflows/announce.yml@7d9cbb97e4a8fea9d5244ab6de9b06cb2eab8229 # main
     with:
@@ -114,6 +135,7 @@ jobs:
 
   announce-cli:
     needs: publish
+    permissions: {}
     if: ${{ !cancelled() && needs.publish.outputs.cli == 'true' }}
     uses: BaryoDev/.github/.github/workflows/announce.yml@7d9cbb97e4a8fea9d5244ab6de9b06cb2eab8229 # main
     with:
