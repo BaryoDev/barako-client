@@ -1,0 +1,6 @@
+# Secret scanning config. The default rules cover provider tokens; add rules here only for a
+# credential shape this repository really handles.
+title = "barako-client"
+
+[extend]
+useDefault = true

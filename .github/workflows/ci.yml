@@ -4,16 +4,23 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Nightly, so a new advisory against an unchanged lockfile turns the audit job red without a push.
+  # Only the audit and secrets jobs run on it. A failed run is the signal; nothing files an issue.
+  schedule:
+    - cron: "17 4 * * *"
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
           cache: npm
@@ -21,3 +28,109 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  # A tag can be moved after review, a commit SHA cannot. Every action in every workflow is pinned
+  # by full SHA with the version in a comment, and this fails the build when one is not.
+  pins:
+    name: Action pins
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Every action is pinned by commit SHA
+        run: bash scripts/check-action-pins.sh
+
+      # A check that has only ever passed is not evidence that it can fail.
+      - name: The pin check fails on a tag
+        run: |
+          set -uo pipefail
+          d=$(mktemp -d)
+          printf 'jobs:\n  j:\n    steps:\n      - uses: actions/checkout@v4\n' > "$d/x.yml"
+          if bash scripts/check-action-pins.sh "$d"; then
+            echo "::error::the pin check passed a tag pin"; exit 1
+          fi
+
+  # One lockfile covers the client and the cli workspace, so one audit covers both. Development
+  # dependencies are included: tsup, esbuild and vitest run in the build that produces the published
+  # files, and the audit is clean today, so including them costs nothing.
+  audit:
+    name: Audit dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: The audit gate keeps its rules
+        run: bash scripts/test-audit-gate.sh
+
+      # Critical or High fails the build unless .github/audit-allowlist.json names the advisory
+      # with a reason and an expiry date that has not passed. `npm audit` exits non-zero when it
+      # finds anything, so its status cannot tell "found vulnerabilities" from "could not run". The
+      # report is the signal, and an unreadable one fails the build.
+      - name: Audit dependencies (fail on Critical or High)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            timeout 180 npm audit --json > audit.json || true
+            if jq -e '.metadata.vulnerabilities.total' audit.json >/dev/null 2>&1; then break; fi
+            echo "npm audit attempt $attempt returned no report, retrying in 60s"
+            sleep 60
+          done
+          bash scripts/audit-gate.sh audit.json | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # gitleaks scans history, and the default depth of 1 gives it one commit.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The binary is MIT licensed and free. The hosted Action needs a licence for an organization.
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          VERSION=8.28.0
+          SHA256=a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+          curl -sSL --fail -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz"
+          echo "${SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Secret scan (gitleaks)
+        run: gitleaks git . --config .gitleaks.toml --redact --verbose
+
+      # A scanner that finds nothing looks the same as one that is not running. Plant a credential
+      # and fail if the scan does not catch it. Prefixes are assembled from halves so this file does
+      # not match its own rules.
+      - name: Prove the scan can fail
+        run: |
+          set -euo pipefail
+          TMP=$(mktemp -d)
+          cp .gitleaks.toml "$TMP/.gitleaks.toml"
+          AWS_P="AK"; AWS_P="${AWS_P}IA"
+          GH_P="gh"; GH_P="${GH_P}p_"
+          RAND=$(head -c 256 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9')
+          AWS_ID="${AWS_P}$(printf '%s' "${RAND}" | LC_ALL=C tr -d '[:lower:]' | cut -c1-16)"
+          GH_TOK="${GH_P}$(printf '%s' "${RAND}" | cut -c1-36)"
+          {
+            printf 'aws_access_key_id = "%s"\n' "$AWS_ID"
+            printf 'gh_token = "%s"\n' "$GH_TOK"
+          } > "$TMP/planted.txt"
+          if gitleaks dir "$TMP" --config "$TMP/.gitleaks.toml" --redact --no-banner; then
+            echo "::error::The secret scan did not catch a planted credential. The gate is not working."
+            exit 1
+          fi
+          echo "Planted secret was caught. The scan is live."
