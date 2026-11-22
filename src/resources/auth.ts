@@ -29,7 +29,7 @@ export function authResource(transport: Transport, store: TokenStore): AuthResou
         body: { username, password },
         headers: tenant ? { "X-Tenant": tenant } : undefined,
         noRetry: true,
-        credentialed: true,
+        credentialed: true, // carries the password
         read: true, // saves nothing, so it takes the read timeout
         ...callOpts(opts),
       });
@@ -62,7 +62,7 @@ export function authResource(transport: Transport, store: TokenStore): AuthResou
         path: "/api/auth/refresh",
         body: { refreshToken },
         noRetry: true,
-        credentialed: true,
+        credentialed: true, // carries the refresh token
         // The read timeout, as the automatic refresh uses. Not `read: true`: the server may have
         // rotated the token, so a timed out refresh still says the outcome is unknown.
         readDeadline: true,
