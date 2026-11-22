@@ -23,6 +23,9 @@ jq '.vulnerabilities.foo={"severity":"critical","via":[{"severity":"critical","n
 echo '{"metadata":{"vulnerabilities":{"total":0}},"vulnerabilities":{}}' >"$T/clean.json"
 echo '<html>503</html>' >"$T/bad.json"
 echo '{' >"$T/badallow.json"
+jq '.vulnerabilities.foo={"severity":"high","via":[{"severity":"high","name":"foo","source":1099999}]}' "$T/clean.json" >"$T/nourl.json"
+jq '.vulnerabilities.foo={"severity":"high","via":[{"severity":"high","name":"foo","url":7}]}' "$T/clean.json" >"$T/badurl.json"
+echo '{"metadata":{"vulnerabilities":{"high":2,"total":2}},"vulnerabilities":{"foo":{"severity":"high","via":["bar"]}}}' >"$T/unread.json"
 echo '[{"id":"GHSA-aaaa-bbbb-cccc","expires":"2026-11-04"}]' >"$T/noreason.json"
 
 check "a clean report passes"                       0 "$T/clean.json" "$T/allow.json" 2026-10-04
@@ -34,5 +37,8 @@ check "another advisory still fails"                1 "$T/extra.json" "$T/allow.
 check "an unreadable report fails closed"           1 "$T/bad.json" "$T/allow.json" 2026-10-04
 check "an unreadable allowlist fails closed"        1 "$T/report.json" "$T/badallow.json" 2026-10-04
 check "an entry with no reason accepts nothing"     1 "$T/report.json" "$T/noreason.json" 2026-10-04
+check "an advisory with no url still fails"         1 "$T/nourl.json" "$T/allow.json" 2026-10-04
+check "an advisory with a non-string url fails"     1 "$T/badurl.json" "$T/allow.json" 2026-10-04
+check "a High count with no advisory read fails"    1 "$T/unread.json" "$T/allow.json" 2026-10-04
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
