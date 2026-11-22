@@ -25,6 +25,8 @@ services:
       - "127.0.0.1:5188:8080"
     environment:
       ASPNETCORE_ENVIRONMENT: Production
+      # Core 6.0 refuses AllowedHosts "*" in Production. The suite calls http://127.0.0.1:5188.
+      AllowedHosts: "localhost;127.0.0.1"
       ConnectionStrings__DefaultConnection: Host=postgres;Database=barako_cli_test;Username=postgres;Password=cli-test-db-password
       JWT__Key: cli-test-jwt-key-not-a-secret-0123456789abcdef
       InitialAdmin__Username: cliadmin

@@ -22,6 +22,7 @@ const SECRET_FLAGS = ["--api-key", "--apikey", "--key", "--token", "--secret"];
 const GLOBAL_OPTIONS: (ArgSpec & { short?: string })[] = [
   { name: "url", kind: "flag", type: "string", description: "API base URL. Default is BARAKO_URL." },
   { name: "key-file", kind: "flag", type: "string", description: "File holding the API key. Default is BARAKO_API_KEY." },
+  { name: "allow-http", kind: "flag", type: "boolean", description: "Allow the API key over plain http to a host that is not loopback. Default is BARAKO_ALLOW_HTTP=1." },
   { name: "output", short: "o", kind: "flag", type: "string", description: "json (default) or text." },
 ];
 
@@ -54,7 +55,7 @@ function findCommand(argv: string[]): { command: Command; rest: string[] } | und
 function parseCommandArgs(command: Command, rest: string[]): Record<string, unknown> {
   const options: Record<string, { type: "string" | "boolean"; multiple?: boolean; short?: string }> = {};
   for (const g of GLOBAL_OPTIONS) {
-    options[g.name] = { type: "string", ...(g.short ? { short: g.short } : {}) };
+    options[g.name] = { type: g.type === "boolean" ? "boolean" : "string", ...(g.short ? { short: g.short } : {}) };
   }
   for (const a of command.args) {
     if (a.kind !== "flag") continue;
@@ -102,6 +103,7 @@ function parseCommandArgs(command: Command, rest: string[]): Record<string, unkn
   }
   out.__url = parsed.values.url;
   out.__keyFile = parsed.values["key-file"];
+  out.__allowHttp = parsed.values["allow-http"] === true;
   out.__output = parsed.values.output;
   return out;
 }
@@ -188,7 +190,11 @@ export async function run(argv: string[], env: Env, io: Io): Promise<number> {
     if (!found.command.offline) {
       const conn = connect(
         env,
-        { url: args.__url as string | undefined, keyFile: args.__keyFile as string | undefined },
+        {
+          url: args.__url as string | undefined,
+          keyFile: args.__keyFile as string | undefined,
+          allowHttp: args.__allowHttp === true,
+        },
         io.readFile,
         fileResources,
       );

@@ -87,7 +87,7 @@ export function resolveTimeout(perCall: number | undefined, fallback: number): n
 export async function fetchText(
   fetchImpl: typeof fetch,
   url: string,
-  init: { method: string; headers: Record<string, string>; body?: string },
+  init: { method: string; headers: Record<string, string>; body?: string; redirect?: "error" },
   limits: { signals: Array<AbortSignal | undefined>; timeoutMs: number; read?: boolean },
 ): Promise<TextResponse> {
   const writes = !(limits.read ?? isRead(init.method));
@@ -151,6 +151,10 @@ export async function fetchText(
     return await Promise.race([work, stop]);
   } catch (e) {
     if (e instanceof BarakoError) throw e;
+    if (init.redirect === "error" && /redirect/i.test(`${(e as Error)?.message} ${((e as { cause?: Error } | null)?.cause)?.message ?? ""}`)) {
+      // The message has no URL, so a query string on the target cannot leak into it.
+      throw failure(0, "Network error: the auth endpoint redirected and the redirect was not followed.", "network");
+    }
     // The reason comes from the fetch implementation, so it is scrubbed, bounded and kept to one line.
     const reason = clip(scrubUrls(e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim());
     throw failure(0, `Network error: ${reason}.${unknownNote}`, "network");
@@ -243,4 +247,34 @@ export function waitBounded<T>(
 /** The per-call fields of a RequestOptions, taken from a CallOptions. */
 export function callOpts(opts?: CallOptions): CallOptions {
   return { signal: opts?.signal, timeoutMs: opts?.timeoutMs };
+}
+
+/** True for `localhost`, any `127.x.x.x` address and `[::1]`, the hosts where plain http stays on the machine. */
+export function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === "localhost" || h === "[::1]" || /^127(\.\d{1,3}){3}$/.test(h);
+}
+
+/**
+ * Returns a check that throws when a credential would travel over plain http to a host that is not
+ * loopback, unless `allow` is set. A URL that is not absolute (a browser path) or is not http always
+ * passes. Call the check before anything that carries a credential.
+ */
+export function plainHttpGuard(baseUrl: string, allow: boolean | undefined): () => void {
+  let refuse = false;
+  if (!allow) {
+    try {
+      const u = new URL(baseUrl);
+      refuse = u.protocol === "http:" && !isLoopbackHost(u.hostname);
+    } catch {
+      refuse = false;
+    }
+  }
+  return () => {
+    if (refuse) {
+      throw new Error(
+        "Refusing to send a credential over plain http to a host that is not loopback. Use https, or set allowInsecureHttp: true if the network is trusted.",
+      );
+    }
+  };
 }
