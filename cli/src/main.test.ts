@@ -84,14 +84,17 @@ describe("run", () => {
     expect(await run(["content", "list", "post"], env, h.io)).toBe(1);
     expect(JSON.parse(h.out[0]!.text).error.message).toContain("--allow-http");
 
-    // With the opt-in the run gets past connect and fails on the network (.invalid never resolves).
+    // With the opt-in the run gets past argument parsing and connect, and fails on the network
+    // (.invalid never resolves). A flag the parser does not know fails as usage, so that is checked too.
     for (const [argv, e] of [
       [["content", "list", "post", "--allow-http"], env],
       [["content", "list", "post"], { ...env, BARAKO_ALLOW_HTTP: "1" }],
     ] as const) {
       const h2 = harness();
       await run([...argv], e, h2.io);
-      expect(JSON.parse(h2.out[0]!.text).error.message).not.toContain("Refusing");
+      const error = JSON.parse(h2.out[0]!.text).error;
+      expect(error.code).not.toBe("usage");
+      expect(error.message).not.toContain("Refusing");
     }
   });
 });
