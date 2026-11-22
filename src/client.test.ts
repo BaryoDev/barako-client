@@ -615,3 +615,48 @@ describe("plain http", () => {
     expect(authHeader(fetchImpl.calls[0]!.init)).toBeUndefined();
   });
 });
+
+describe("redirects on credential bodies", () => {
+  function recorder(replies: Array<{ status?: number; body?: unknown }>) {
+    const seen: Array<{ url: string; redirect: RequestRedirect | undefined }> = [];
+    let i = 0;
+    const fn = (async (url: string, init: RequestInit) => {
+      seen.push({ url, redirect: init.redirect });
+      const r = replies[Math.min(i++, replies.length - 1)]!;
+      return new Response(r.body !== undefined ? JSON.stringify(r.body) : null, { status: r.status ?? 200 });
+    }) as unknown as typeof fetch;
+    return Object.assign(fn, { seen });
+  }
+  const tokens = { token: "t", refreshToken: "r2" };
+  const pg = { items: [], page: 1, pageSize: 10, totalCount: 0 };
+
+  it("sends login, refresh and logout with redirect error", async () => {
+    const f = recorder([{ body: tokens }]);
+    const cms = createClient({ baseUrl: BASE, fetch: f });
+    await cms.auth.login("u", "p");
+    await cms.auth.refresh();
+    await cms.auth.logout();
+    expect(f.seen.map((s) => s.redirect)).toEqual(["error", "error", "error"]);
+  });
+
+  it("sends the automatic refresh with redirect error and a plain read without it", async () => {
+    const f = recorder([{ status: 401 }, { body: tokens }, { body: pg }]);
+    const cms = createClient({ baseUrl: BASE, token: "t", refreshToken: "r", fetch: f });
+    await cms.contents.list({ contentType: "post" });
+    expect(f.seen[0]!.redirect === undefined || f.seen[0]!.redirect === "follow").toBe(true);
+    expect(f.seen[1]!.url).toContain("/api/auth/refresh");
+    expect(f.seen[1]!.redirect).toBe("error");
+    expect(f.seen[2]!.redirect === undefined || f.seen[2]!.redirect === "follow").toBe(true);
+  });
+
+  it("says the auth endpoint redirected, without the target query string", async () => {
+    const f = (async () => {
+      throw Object.assign(new TypeError("fetch failed"), { cause: new Error("unexpected redirect to https://x.test/a?secret=1") });
+    }) as unknown as typeof fetch;
+    const cms = createClient({ baseUrl: BASE, fetch: f });
+    const err = await cms.auth.login("u", "p").catch((e) => e);
+    expect(err).toBeInstanceOf(BarakoError);
+    expect(err.message).toContain("auth endpoint redirected");
+    expect(err.message).not.toContain("secret");
+  });
+});

@@ -155,6 +155,7 @@ export class JwtAuthenticator implements Authenticator {
             ...(tenant ? { "X-Tenant": tenant } : {}),
           },
           body: JSON.stringify({ refreshToken }),
+          redirect: "error",
         },
         // The refresh is a POST but takes the read timeout, not the write one. Every request that
         // got a 401 waits on this one refresh, so a hung refresh with no limit would hang them all.

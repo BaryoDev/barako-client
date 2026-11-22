@@ -87,7 +87,7 @@ export class Transport {
     const res = await fetchText(
       this.fetchImpl,
       url,
-      { method: opts.method, headers, body },
+      { method: opts.method, headers, body, ...(opts.credentialed ? { redirect: "error" as const } : {}) },
       {
         signals: [this.limits.signal, opts.signal],
         timeoutMs: resolveTimeout(

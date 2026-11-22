@@ -87,7 +87,7 @@ export function resolveTimeout(perCall: number | undefined, fallback: number): n
 export async function fetchText(
   fetchImpl: typeof fetch,
   url: string,
-  init: { method: string; headers: Record<string, string>; body?: string },
+  init: { method: string; headers: Record<string, string>; body?: string; redirect?: "error" },
   limits: { signals: Array<AbortSignal | undefined>; timeoutMs: number; read?: boolean },
 ): Promise<TextResponse> {
   const writes = !(limits.read ?? isRead(init.method));
@@ -151,6 +151,10 @@ export async function fetchText(
     return await Promise.race([work, stop]);
   } catch (e) {
     if (e instanceof BarakoError) throw e;
+    if (init.redirect === "error" && /redirect/i.test(`${(e as Error)?.message} ${((e as { cause?: Error } | null)?.cause)?.message ?? ""}`)) {
+      // The message has no URL, so a query string on the target cannot leak into it.
+      throw failure(0, "Network error: the auth endpoint redirected and the redirect was not followed.", "network");
+    }
     // The reason comes from the fetch implementation, so it is scrubbed, bounded and kept to one line.
     const reason = clip(scrubUrls(e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim());
     throw failure(0, `Network error: ${reason}.${unknownNote}`, "network");
