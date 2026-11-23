@@ -124,6 +124,10 @@ mixed_out=$(bash scripts/check-action-pins.sh "$T/p-mixed/workflows" 2>&1 || tru
 if grep -q 'actions/setup-node@v7' <<<"$mixed_out"; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: the later tag is named"; fi
 pins_check "two SHA-pinned flow maps pass"             0 "$T/p-two/workflows"
 if bash scripts/check-action-pins.sh "$T/p-two/workflows" 2>&1 | grep -q '2 checked, 0 not pinned'; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: two flow maps count 2 checked"; fi
+# No newline after the last line, which a plain read loop never returns.
+mkdir -p "$T/p-noeol/workflows"
+printf '%s\n      - uses: actions/setup-node@v4' "$pinned" >"$T/p-noeol/workflows/a.yml"
+pins_check "a tag on a last line with no newline fails" 1 "$T/p-noeol/workflows"
 pins_check "this repository's workflows pass"          0 .github/workflows
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
