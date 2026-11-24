@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -41,6 +41,21 @@ export interface StackDeps {
   token(bytes: number): string;
   /** The user's home directory. The stack lives in <home>/.barako/stack. */
   home(): string;
+  /** One request to the stack's API. Status 0 means it could not be reached. */
+  http(req: HttpRequest): Promise<HttpReply>;
+  sleep(ms: number): Promise<void>;
+}
+
+export interface HttpRequest {
+  method: "GET" | "POST";
+  url: string;
+  headers?: Record<string, string>;
+  json?: unknown;
+}
+
+export interface HttpReply {
+  status: number;
+  body: string;
 }
 
 /**
@@ -80,6 +95,21 @@ export function realDeps(): StackDeps {
     },
     token: (bytes) => randomBytes(bytes).toString("base64url"),
     home: () => homedir(),
+    async http(req) {
+      try {
+        const res = await fetch(req.url, {
+          method: req.method,
+          headers: { ...(req.json === undefined ? {} : { "content-type": "application/json" }), ...req.headers },
+          body: req.json === undefined ? undefined : JSON.stringify(req.json),
+          redirect: "manual",
+          signal: AbortSignal.timeout(20_000),
+        });
+        return { status: res.status, body: await res.text() };
+      } catch {
+        return { status: 0, body: "" };
+      }
+    },
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   };
 }
 
@@ -95,6 +125,50 @@ interface State {
   tenant: string;
   latest: boolean;
   versions: Versions;
+  /** Set once the tenant, kit and API key exist, so a second up does not sign in again. */
+  bootstrap?: { kit: string };
+}
+
+/** The kit name rule core applies, anchored to the whole string. JavaScript's $ without the m flag never matches before a final newline. */
+const KIT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const DEFAULT_KIT = "site";
+const MAX_KIT_BYTES = 256 * 1024;
+const KEY_FILE = "api-key";
+const ADMIN_URL = `http://127.0.0.1:${API_HOST_PORT}`;
+
+export interface Kit {
+  name: string;
+  /** The file's text when the kit came from a path. It is copied into the stack folder, never run. */
+  file?: string;
+}
+
+/** A kit given with --kit: a name core knows, or a path to a blueprint file. A name wins when the text is a valid name. */
+export function resolveKit(value: unknown): Kit | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length === 0) throw new CliError("usage", "--kit needs a kit name or a path to a kit file.");
+  if (KIT_NAME.test(value)) return { name: value };
+  let isFile = false;
+  try {
+    isFile = statSync(value).isFile();
+  } catch {
+    // Not a file.
+  }
+  if (!isFile) {
+    throw new CliError("usage", "--kit is not a kit name (lower-case letters, digits and hyphens) and not a file that exists. Start a relative path with ./");
+  }
+  if (statSync(value).size > MAX_KIT_BYTES) throw new CliError("usage", "The kit file is larger than 256 KB.");
+  const text = readFileSync(value, "utf8");
+  let name: unknown;
+  try {
+    name = (JSON.parse(text) as { name?: unknown }).name;
+  } catch {
+    throw new CliError("usage", "The kit file is not valid JSON.");
+  }
+  const norm = typeof name === "string" ? name.trim().toLowerCase() : "";
+  if (!KIT_NAME.test(norm)) {
+    throw new CliError("usage", "The kit file needs a name of lower-case letters, digits and hyphens.");
+  }
+  return { name: norm, file: text };
 }
 
 
@@ -201,6 +275,22 @@ function envComplete(dir: string): boolean {
   }
 }
 
+/** Writes a 0600 file that must not exist yet. A tmp file is linked into place so a crash never leaves half a file. */
+function createPrivateFile(dir: string, name: string, text: string): void {
+  const tmp = join(dir, `${name}.tmp`);
+  try {
+    unlinkSync(tmp);
+  } catch {
+    // No leftover.
+  }
+  writeFileSync(tmp, text, { mode: 0o600, flag: "wx" });
+  try {
+    linkSync(tmp, join(dir, name));
+  } finally {
+    unlinkSync(tmp);
+  }
+}
+
 /** The directory is 0700 and .env is 0600. .env is created only when absent, by a link so a crash never leaves half a file. */
 export function writeStack(deps: StackDeps, dir: string, state: State): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -217,20 +307,9 @@ export function writeStack(deps: StackDeps, dir: string, state: State): void {
       // The prefix makes sure the password has upper, lower, a digit and a symbol.
       ADMIN_PASSWORD: "Aa1-" + deps.token(18),
     };
-    const text = SECRET_NAMES.map((k) => `${k}=${values[k]}`).join("\n") + "\n";
-    const tmp = join(dir, ".env.tmp");
-    try {
-      unlinkSync(tmp);
-    } catch {
-      // No leftover.
-    }
-    writeFileSync(tmp, text, { mode: 0o600, flag: "wx" });
-    try {
-      linkSync(tmp, envPath);
-    } finally {
-      unlinkSync(tmp);
-    }
+    createPrivateFile(dir, ".env", SECRET_NAMES.map((k) => `${k}=${values[k]}`).join("\n") + "\n");
   }
+  mkdirSync(join(dir, "blueprints"), { recursive: true, mode: 0o755 });
   writeIfChanged(join(dir, "compose.yml"), COMPOSE_YML);
   writeIfChanged(join(dir, "Caddyfile"), CADDYFILE);
   writeIfChanged(join(dir, "app-role.sql"), APP_ROLE_SQL);
@@ -294,6 +373,96 @@ async function runningCount(deps: StackDeps, dir: string, state: State): Promise
   return r.stdout.split("\n").filter((l) => l.trim()).length;
 }
 
+function fail(step: string, r: HttpReply): CliError {
+  if (r.status === 0) return new CliError("network", `${step}: the API at ${ADMIN_URL} did not answer.`);
+  return new CliError("server", `${step} failed (HTTP ${r.status}).`);
+}
+
+function field(body: string, ...names: string[]): string | undefined {
+  try {
+    const o = JSON.parse(body) as Record<string, unknown>;
+    for (const n of names) if (typeof o[n] === "string" && (o[n] as string).length > 0) return o[n] as string;
+  } catch {
+    // Not JSON.
+  }
+  return undefined;
+}
+
+/**
+ * Creates the tenant, applies the kit and, when there is no key file, makes the API key. Every step
+ * tolerates having been done already. Errors name a step and a status, never a response body, and the
+ * password and the key are never printed.
+ */
+async function bootstrap(deps: StackDeps, dir: string, kit: Kit, log: (line: string) => void): Promise<{ keyCreated: boolean }> {
+  const password = parseEnv(readFileSync(join(dir, ".env"), "utf8")).ADMIN_PASSWORD ?? "";
+  const call = (method: "GET" | "POST", path: string, opts: { token?: string; tenant?: string; json?: unknown } = {}) =>
+    deps.http({
+      method,
+      url: ADMIN_URL + path,
+      json: opts.json,
+      headers: {
+        ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+        ...(opts.tenant ? { "x-tenant": opts.tenant } : {}),
+      },
+    });
+
+  log("Waiting for the API.");
+  let ready = false;
+  for (let i = 0; i < 90 && !ready; i++) {
+    ready = (await call("GET", "/health/ready")).status === 200;
+    if (!ready) await deps.sleep(1000);
+  }
+  if (!ready) throw new CliError("network", "The API did not become ready in 90 seconds. Check docker compose logs for the api service.");
+
+  // Sign-in is limited to 5 attempts in 15 minutes, so there is no retry here.
+  const signIn = async (tenant?: string): Promise<string> => {
+    const r = await call("POST", "/api/auth/login", { tenant, json: { Username: ADMIN_USER, Password: password } });
+    if (r.status === 429) throw new CliError("conflict", "Sign-in is rate limited (5 attempts in 15 minutes). Wait 15 minutes and run barako up again.");
+    if (r.status === 401) throw new CliError("unauthorized", `The admin password in .env was refused. ${BROKEN}`);
+    if (r.status !== 200) throw fail("Sign-in", r);
+    const token = field(r.body, "token", "Token");
+    if (!token) throw new CliError("server", "Sign-in did not return a token.");
+    return token;
+  };
+
+  log("Signing in.");
+  const first = await signIn();
+  const tenant = await call("POST", "/api/tenants", { token: first, json: { Handle: TENANT, Name: "Client" } });
+  if (tenant.status === 409) throw new CliError("conflict", `Creating the tenant '${TENANT}' clashed with a domain already in use.`);
+  const existed = tenant.status === 400 && tenant.body.includes("A tenant with this handle already exists.");
+  if (tenant.status !== 200 && tenant.status !== 201 && !existed) throw fail("Creating the tenant", tenant);
+
+  const token = await signIn(TENANT);
+  const applied = await call("POST", `/api/content-types/blueprints/${encodeURIComponent(kit.name)}`, { token, tenant: TENANT });
+  if (applied.status === 404) {
+    throw new CliError("not_found", `The stack does not know a kit called '${kit.name}'. If you passed a file, run barako down and barako up again so the stack can read it.`);
+  }
+  if (applied.status !== 200 && applied.status !== 201 && applied.status !== 409) throw fail(`Applying the kit '${kit.name}'`, applied);
+
+  const keyPath = join(dir, KEY_FILE);
+  if (existsSync(keyPath)) {
+    chmodSync(keyPath, 0o600);
+    return { keyCreated: false };
+  }
+  const expires = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
+  const made = await call("POST", "/api/api-keys", {
+    token,
+    tenant: TENANT,
+    json: { Name: "barako up", Scopes: ["content:read", "content:write"], ExpiresAt: expires, ContentTypes: [], ReadOnly: false },
+  });
+  if (made.status !== 200 && made.status !== 201) throw fail("Creating the API key", made);
+  const key = field(made.body, "key", "Key");
+  if (!key) throw new CliError("server", "Creating the API key did not return a key.");
+  createPrivateFile(dir, KEY_FILE, key + "\n");
+  return { keyCreated: true };
+}
+
+/** The barako mcp command for this stack. The key stays in its file. */
+function mcpLine(dir: string): string {
+  const quote = (p: string) => (/[\s'"$`\\]/.test(p) ? `'${p.replace(/'/g, `'\\''`)}'` : p);
+  return `barako mcp --allow-writes --url ${ADMIN_URL} --key-file ${quote(join(dir, KEY_FILE))}`;
+}
+
 function urls(port: number) {
   return {
     site: `http://client.localhost:${port}`,
@@ -311,6 +480,7 @@ function summary(dir: string, state: State) {
     passwordFile: join(dir, ".env"),
     passwordKey: "ADMIN_PASSWORD",
     versions: Object.fromEntries(Object.entries(state.versions).map(([k, p]) => [k, imageRef(p)])),
+    ...(existsSync(join(dir, KEY_FILE)) ? { apiKeyFile: join(dir, KEY_FILE), mcp: mcpLine(dir) } : {}),
   };
 }
 
@@ -342,6 +512,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
     args: [
       // A string, so the raw text reaches parsePort. A number would turn 0x1F90 or 1e4 into a valid port.
       { name: "port", kind: "flag", type: "string", description: `Port for the site and console on 127.0.0.1, 1024 to 65535. Default ${DEFAULT_PORT}.` },
+      { name: "kit", kind: "flag", type: "string", description: `A kit to apply: a name core knows (default ${DEFAULT_KIT}), or the path to a blueprint file. A file is copied into the stack folder and read by core, never run.` },
       { name: "latest", kind: "flag", type: "boolean", description: "Use the newest published core, Press and Brew images instead of the versions pinned in this release." },
     ],
     offline: true,
@@ -349,11 +520,25 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       const dir = stackDir(deps);
       const wantPort = args.port === undefined ? undefined : parsePort(args.port);
       const wantLatest = args.latest === true;
+      const kit = resolveKit(args.kit);
 
       await requireDocker(deps);
 
       const prior = loadState(dir);
       const envPath = join(dir, ".env");
+      // After the stack is up: the tenant, the kit and the key. Skipped when an earlier up did them.
+      const finish = async (state: State, base: Record<string, unknown>) => {
+        const done = state.bootstrap;
+        const settled = done !== undefined && existsSync(join(dir, KEY_FILE)) && (!kit || kit.name === done.kit);
+        if (!settled) {
+          const use: Kit = kit ?? { name: DEFAULT_KIT };
+          if (use.file !== undefined) writeIfChanged(join(dir, "blueprints", `${use.name}.json`), use.file);
+          await bootstrap(deps, dir, use, (l) => ctx.stdio?.log(l));
+          state.bootstrap = { kit: use.name };
+          writeIfChanged(join(dir, "state.json"), JSON.stringify(state, null, 2) + "\n", 0o600);
+        }
+        return { ...base, ...summary(dir, state) };
+      };
       if (!existsSync(envPath)) {
         if (prior || (await volumeExists(deps))) {
           throw new CliError("conflict", `Stack data exists but .env is gone, so new passwords would not match the database. ${BROKEN}`);
@@ -370,11 +555,10 @@ export function makeStackCommands(deps: StackDeps): Command[] {
         }
         if (running >= SERVICES) {
           const stale = filesDiffer(dir);
-          return {
+          return finish(prior, {
             alreadyRunning: true,
             ...(stale ? { notice: "The stack files in this release differ from the running stack. Run barako down, then barako up, to apply them." } : {}),
-            ...summary(dir, prior),
-          };
+          });
         }
       }
 
@@ -387,6 +571,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
             tenant: TENANT,
             latest: wantLatest,
             versions: wantLatest ? newest() : pinned(),
+            ...(prior?.bootstrap ? { bootstrap: prior.bootstrap } : {}),
           };
 
       if (running === 0) {
@@ -405,7 +590,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       ]);
       if (r.code !== 0) throw failure("docker compose up failed", r, dir);
       const notice = state.latest ? "Using the newest published images, not the versions pinned in this release." : undefined;
-      return { alreadyRunning: false, ...(notice ? { notice } : {}), ...summary(dir, state) };
+      return finish(state, { alreadyRunning: false, ...(notice ? { notice } : {}) });
     },
   };
 
@@ -471,6 +656,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       if (state && state !== CORRUPT && envComplete(dir)) {
         const r = await compose(deps, dir, state, ["down", "--volumes", "--remove-orphans"]);
         if (r.code !== 0) throw failure("docker compose down failed", r, dir);
+        forgetBootstrap(dir, state);
         return { reset: true, dataDeleted: true };
       }
 
@@ -484,7 +670,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       }
       await deps.docker(["network", "rm", `${PROJECT}_edge`], {});
       // Drop the broken files so the next up starts clean.
-      for (const f of [statePath, envPath]) {
+      for (const f of [statePath, envPath, join(dir, KEY_FILE)]) {
         try {
           unlinkSync(f);
         } catch {
@@ -496,6 +682,17 @@ export function makeStackCommands(deps: StackDeps): Command[] {
   };
 
   return [up, status, down, reset];
+}
+
+/** The data is gone, so the key in api-key no longer opens anything and the next up must bootstrap again. */
+function forgetBootstrap(dir: string, state: State): void {
+  try {
+    unlinkSync(join(dir, KEY_FILE));
+  } catch {
+    // None.
+  }
+  delete state.bootstrap;
+  writeIfChanged(join(dir, "state.json"), JSON.stringify(state, null, 2) + "\n", 0o600);
 }
 
 function parsePs(out: string): { service: string; state: string; health?: string }[] {

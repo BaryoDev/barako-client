@@ -38,7 +38,11 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:${API_HOST_PORT}:8080"
+    volumes:
+      # Kit files given to barako up with --kit <path> are copied here. Core reads them, never writes.
+      - ./blueprints:/blueprints:ro
     environment:
+      Blueprints__Path: /blueprints
       ASPNETCORE_ENVIRONMENT: Production
       Tenancy__Mode: Single
       ConnectionStrings__DefaultConnection: Host=postgres;Database=barako;Username=barako_app;Password=\${APP_DB_PASSWORD}

@@ -14,7 +14,10 @@ import {
   makeStackCommands,
   parsePort,
   realDeps,
+  resolveKit,
   type DockerResult,
+  type HttpReply,
+  type HttpRequest,
   type StackDeps,
 } from "../src/commands/stack";
 import { CADDYFILE, COMPOSE_YML, VERSIONS_JSON } from "../src/stack/files";
@@ -37,6 +40,22 @@ let counter: number;
 let psFails: boolean;
 let volume: boolean;
 let labelled: string;
+let httpCalls: HttpRequest[];
+let api: (req: HttpRequest) => HttpReply;
+
+const FAKE_KEY = "fake-api-key-for-tests";
+const FAKE_JWT = "fake-jwt-for-tests";
+
+/** A core that accepts everything the bootstrap sends. */
+const happyApi = (req: HttpRequest): HttpReply => {
+  const path = new URL(req.url).pathname;
+  if (path === "/health/ready") return { status: 200, body: "Healthy" };
+  if (path === "/api/auth/login") return { status: 200, body: JSON.stringify({ token: FAKE_JWT, refreshToken: "fake-refresh" }) };
+  if (path === "/api/tenants") return { status: 200, body: "{}" };
+  if (path.startsWith("/api/content-types/blueprints/")) return { status: 200, body: "{}" };
+  if (path === "/api/api-keys") return { status: 200, body: JSON.stringify({ key: FAKE_KEY }) };
+  return { status: 404, body: "" };
+};
 
 function fakeDeps(): StackDeps {
   return {
@@ -64,6 +83,11 @@ function fakeDeps(): StackDeps {
       return `fake${counter}`.padEnd(Math.ceil((bytes * 4) / 3), "x");
     },
     home: () => home,
+    async http(req) {
+      httpCalls.push(req);
+      return api(req);
+    },
+    async sleep() {},
   };
 }
 
@@ -96,6 +120,8 @@ beforeEach(() => {
   psFails = false;
   volume = false;
   labelled = "";
+  httpCalls = [];
+  api = happyApi;
   spawnMock.mockReset();
 });
 
@@ -323,7 +349,8 @@ describe("up output", () => {
     expect(out.urls.apiLocal).toBe("http://127.0.0.1:5005");
     expect(out.adminUser).toBe("admin");
     expect(out.passwordFile).toBe(join(dir(), ".env"));
-    expect(out).not.toHaveProperty("mcp");
+    expect(out.mcp).toBe(`barako mcp --allow-writes --url http://127.0.0.1:5005 --key-file ${join(dir(), "api-key")}`);
+    expect(JSON.stringify(out)).not.toContain(FAKE_KEY);
     const secrets = readFileSync(join(dir(), ".env"), "utf8").trim().split("\n").map((l) => l.split("=")[1]!);
     for (const s of secrets) expect(JSON.stringify(out)).not.toContain(s);
   });
@@ -713,5 +740,231 @@ describe("reset through main", () => {
     expect(code).toBe(0);
     expect(out.join("")).toContain('"reset":true');
     expect(spawnMock.mock.calls[0]![1]).toContain("--volumes");
+  });
+});
+
+const paths = () => httpCalls.map((c) => `${c.method} ${new URL(c.url).pathname}`);
+const header = (c: HttpRequest, name: string) => c.headers?.[name];
+
+describe("bootstrap", () => {
+  it("signs in, makes the tenant, signs in as it, applies the kit and makes the key, in that order", async () => {
+    await cmd("up")({});
+    expect(paths()).toEqual([
+      "GET /health/ready",
+      "POST /api/auth/login",
+      "POST /api/tenants",
+      "POST /api/auth/login",
+      "POST /api/content-types/blueprints/site",
+      "POST /api/api-keys",
+    ]);
+    const [, login1, tenant, login2, blueprint, key] = httpCalls as [HttpRequest, HttpRequest, HttpRequest, HttpRequest, HttpRequest, HttpRequest];
+    const env = readFileSync(join(dir(), ".env"), "utf8");
+    const password = /ADMIN_PASSWORD=(.*)/.exec(env)![1];
+    expect(login1.json).toEqual({ Username: "admin", Password: password });
+    expect(header(login1, "x-tenant")).toBeUndefined();
+    expect(header(tenant, "authorization")).toBe(`Bearer ${FAKE_JWT}`);
+    expect(tenant.json).toMatchObject({ Handle: "client" });
+    expect(header(login2, "x-tenant")).toBe("client");
+    expect(header(blueprint, "x-tenant")).toBe("client");
+    expect(key.json).toMatchObject({
+      Name: "barako up",
+      Scopes: ["content:read", "content:write"],
+      ContentTypes: [],
+      ReadOnly: false,
+    });
+    const expires = Date.parse((key.json as { ExpiresAt: string }).ExpiresAt);
+    expect(expires).toBeGreaterThan(Date.now() + 300 * 24 * 3600 * 1000);
+    for (const c of httpCalls) expect(c.url.startsWith("http://127.0.0.1:5005/")).toBe(true);
+  });
+
+  it("writes the key as 0600 through a link, and never prints it", async () => {
+    const oldMask = process.umask(0o022);
+    try {
+      const out = await cmd("up")({});
+      const file = join(dir(), "api-key");
+      expect(readFileSync(file, "utf8")).toBe(FAKE_KEY + "\n");
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(existsSync(join(dir(), "api-key.tmp"))).toBe(false);
+      expect(out.apiKeyFile).toBe(file);
+      expect(JSON.stringify(out)).not.toContain(FAKE_KEY);
+    } finally {
+      process.umask(oldMask);
+    }
+  });
+
+  it("a second up on a running stack signs in no more and keeps the key", async () => {
+    await cmd("up")({});
+    const key = readFileSync(join(dir(), "api-key"), "utf8");
+    httpCalls = [];
+    running = 5;
+    const out = await cmd("up")({});
+    expect(out.alreadyRunning).toBe(true);
+    expect(httpCalls).toEqual([]);
+    expect(readFileSync(join(dir(), "api-key"), "utf8")).toBe(key);
+    expect(out.mcp).toContain("--key-file");
+  });
+
+  it("up after down does not sign in again either", async () => {
+    await cmd("up")({});
+    httpCalls = [];
+    running = 0;
+    await cmd("up")({});
+    expect(httpCalls).toEqual([]);
+  });
+
+  it("makes no second key when the key file is there", async () => {
+    await cmd("up")({});
+    const state = JSON.parse(readFileSync(join(dir(), "state.json"), "utf8"));
+    delete state.bootstrap;
+    writeFileSync(join(dir(), "state.json"), JSON.stringify(state), { mode: 0o600 });
+    httpCalls = [];
+    running = 5;
+    await cmd("up")({});
+    expect(paths()).not.toContain("POST /api/api-keys");
+    expect(paths()).toContain("POST /api/content-types/blueprints/site");
+    expect(readFileSync(join(dir(), "api-key"), "utf8")).toBe(FAKE_KEY + "\n");
+  });
+
+  it("goes on when the tenant already exists, and stops on any other 400", async () => {
+    api = (r) =>
+      new URL(r.url).pathname === "/api/tenants"
+        ? { status: 400, body: JSON.stringify({ errors: { handle: ["A tenant with this handle already exists."] } }) }
+        : happyApi(r);
+    await cmd("up")({});
+    expect(paths()).toContain("POST /api/api-keys");
+
+    rmSync(dir(), { recursive: true, force: true });
+    api = (r) => (new URL(r.url).pathname === "/api/tenants" ? { status: 400, body: "LEAKED-BODY" } : happyApi(r));
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("HTTP 400");
+    expect(e.message).not.toContain("LEAKED-BODY");
+  });
+
+  it("a 409 on the tenant is a domain clash", async () => {
+    api = (r) => (new URL(r.url).pathname === "/api/tenants" ? { status: 409, body: "LEAKED-BODY" } : happyApi(r));
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("conflict");
+    expect(e.message).not.toContain("LEAKED-BODY");
+    expect(existsSync(join(dir(), "api-key"))).toBe(false);
+  });
+
+  it("a kit that was applied before (409) is fine, an unknown kit (404) is an error", async () => {
+    api = (r) => (new URL(r.url).pathname.startsWith("/api/content-types/") ? { status: 409, body: "LEAKED-BODY" } : happyApi(r));
+    await cmd("up")({});
+    expect(existsSync(join(dir(), "api-key"))).toBe(true);
+
+    rmSync(dir(), { recursive: true, force: true });
+    api = (r) => (new URL(r.url).pathname.startsWith("/api/content-types/") ? { status: 404, body: "LEAKED-BODY" } : happyApi(r));
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("not_found");
+    expect(e.message).not.toContain("LEAKED-BODY");
+  });
+
+  it("signs in once and does not retry on a refusal", async () => {
+    for (const status of [401, 429, 500]) {
+      rmSync(dir(), { recursive: true, force: true });
+      httpCalls = [];
+      api = (r) => (new URL(r.url).pathname === "/api/auth/login" ? { status, body: "LEAKED-BODY" } : happyApi(r));
+      const e = await fails(() => cmd("up")({}));
+      expect(httpCalls.filter((c) => c.url.endsWith("/api/auth/login"))).toHaveLength(1);
+      expect(e.message).not.toContain("LEAKED-BODY");
+      if (status === 429) expect(e.message).toContain("15 minutes");
+    }
+  });
+
+  it("no error holds the admin password or a response body", async () => {
+    api = (r) => (new URL(r.url).pathname === "/api/api-keys" ? { status: 500, body: "LEAKED-BODY" } : happyApi(r));
+    const e = await fails(() => cmd("up")({}));
+    const password = /ADMIN_PASSWORD=(.*)/.exec(readFileSync(join(dir(), ".env"), "utf8"))![1]!;
+    expect(e.message).not.toContain(password);
+    expect(e.message).not.toContain("LEAKED-BODY");
+    expect(e.message).toContain("HTTP 500");
+  });
+
+  it("a key reply with no key is an error and leaves no key file", async () => {
+    api = (r) => (new URL(r.url).pathname === "/api/api-keys" ? { status: 200, body: "{}" } : happyApi(r));
+    await fails(() => cmd("up")({}));
+    expect(existsSync(join(dir(), "api-key"))).toBe(false);
+  });
+
+  it("an API that never gets ready is an error", async () => {
+    api = () => ({ status: 503, body: "" });
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("network");
+    expect(httpCalls.length).toBe(90);
+  });
+
+  it("reset removes the key and the marker, so the next up starts over", async () => {
+    await cmd("up")({});
+    await cmd("reset")({ yes: true });
+    expect(existsSync(join(dir(), "api-key"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(dir(), "state.json"), "utf8")).bootstrap).toBeUndefined();
+    httpCalls = [];
+    await cmd("up")({});
+    expect(paths()).toContain("POST /api/api-keys");
+  });
+});
+
+describe("kit", () => {
+  const file = (text: string, name = "kit.json") => {
+    const p = join(home, name);
+    writeFileSync(p, text);
+    return p;
+  };
+
+  it("takes a name that is lower-case words joined by single hyphens", () => {
+    expect(resolveKit("site")).toEqual({ name: "site" });
+    expect(resolveKit("my-kit-2")).toEqual({ name: "my-kit-2" });
+    expect(resolveKit(undefined)).toBeUndefined();
+  });
+
+  it("refuses a name with a slash, dots, an escape, a line feed or the wrong shape", () => {
+    for (const bad of ["a/b", "..", "../site", "%2F", "a%2Fb", "site\n", "\nsite", "site\r\n", "Site", "-site", "site-", "a--b", "a b", ""]) {
+      expect(() => resolveKit(bad), JSON.stringify(bad)).toThrow(/--kit/);
+    }
+    expect(() => resolveKit(5)).toThrow(/--kit/);
+  });
+
+  it("up refuses a bad kit before it starts docker", async () => {
+    const e = await fails(() => cmd("up")({ kit: "a/b" }));
+    expect(e.code).toBe("usage");
+    expect(calls).toEqual([]);
+    expect(httpCalls).toEqual([]);
+  });
+
+  it("reads a path as text and takes its name from the file", () => {
+    const text = JSON.stringify({ name: " Press-Kit ", contentTypes: [] });
+    expect(resolveKit(file(text))).toEqual({ name: "press-kit", file: text });
+  });
+
+  it("refuses a path that is not JSON, has no usable name, is a folder or is too large", () => {
+    expect(() => resolveKit(file("module.exports = 1;"))).toThrow(/JSON/);
+    expect(() => resolveKit(file("{}"))).toThrow(/name/);
+    expect(() => resolveKit(file(JSON.stringify({ name: "Bad Name" })))).toThrow(/name/);
+    expect(() => resolveKit(home)).toThrow(/--kit/);
+    expect(() => resolveKit(file(JSON.stringify({ name: "big", pad: "x".repeat(300 * 1024) })))).toThrow(/256 KB/);
+  });
+
+  it("applies a named kit, encoded in the path", async () => {
+    await cmd("up")({ kit: "blog-2" });
+    expect(paths()).toContain("POST /api/content-types/blueprints/blog-2");
+  });
+
+  it("copies a kit file into the stack folder and applies it by its name", async () => {
+    const text = JSON.stringify({ name: "mine", contentTypes: [] });
+    await cmd("up")({ kit: file(text) });
+    expect(readFileSync(join(dir(), "blueprints", "mine.json"), "utf8")).toBe(text);
+    expect(paths()).toContain("POST /api/content-types/blueprints/mine");
+    expect(COMPOSE_YML).toContain("./blueprints:/blueprints:ro");
+    expect(COMPOSE_YML).toContain("Blueprints__Path: /blueprints");
+  });
+
+  it("applies another kit on a running stack without a second key", async () => {
+    await cmd("up")({});
+    httpCalls = [];
+    running = 5;
+    await cmd("up")({ kit: "other" });
+    expect(paths()).toContain("POST /api/content-types/blueprints/other");
+    expect(paths()).not.toContain("POST /api/api-keys");
   });
 });
