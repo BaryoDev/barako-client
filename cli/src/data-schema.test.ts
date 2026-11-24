@@ -135,6 +135,8 @@ describe("one fragment per canonical type", () => {
     const f = required({ type: "file" });
     const re = new RegExp(f.pattern);
     expect(re.test("0b8f0f4e-1111-4222-8333-444455556666")).toBe(true);
+    // Core reads it with Guid.TryParseExact(value, "D"), which takes either case.
+    expect(re.test("0B8F0F4E-1111-4222-8333-444455556666")).toBe(true);
     expect(re.test("not an id")).toBe(false);
   });
 
@@ -231,7 +233,7 @@ describe("per field settings", () => {
 
   it("multiple reference is a list of lower case ids, at most 100", () => {
     const f = required({ type: "reference", multiple: true, referenceType: "tag" });
-    expect(f).toMatchObject({ type: "array", uniqueItems: true, maxItems: 100, minItems: 1 });
+    expect(f).toMatchObject({ type: "array", uniqueItems: true, maxItems: 100, minItems: 1, "x-referenceType": "tag" });
     expect(new RegExp(f.items.pattern).test("0b8f0f4e-1111-4222-8333-444455556666")).toBe(true);
     expect(new RegExp(f.items.pattern).test("0B8F0F4E-1111-4222-8333-444455556666")).toBe(false);
   });
@@ -294,6 +296,10 @@ describe("top level", () => {
   it("an empty or odd field list gives an empty properties object", () => {
     expect((dataSchemaOf(typeOf()) as any).properties).toEqual({});
     expect((dataSchemaOf({ name: "x" } as unknown as ReadableContentType) as any).properties).toEqual({});
+    const odd = [{ type: "string" }, { name: "", type: "string" }, { name: 7, type: "string" }, null, "Title"];
+    const schema = dataSchemaOf({ name: "x", fields: odd } as unknown as ReadableContentType) as any;
+    expect(schema.properties).toEqual({});
+    expect(schema.required).toBeUndefined();
   });
 });
 
