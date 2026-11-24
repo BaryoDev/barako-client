@@ -51,6 +51,21 @@ describe("the CLI and the MCP tools share their operations", () => {
     expect(mcp).toEqual(cli);
   });
 
+  it("get one type returns the type and a dataSchema built from its fields, from either side", async () => {
+    const type = { name: "post", fields: [{ name: "Title", type: "string", isRequired: true, validationRules: {}, multiple: false }] };
+    const a = fake();
+    const b = fake();
+    a.parts.contentTypes.get.mockResolvedValue(type);
+    b.parts.contentTypes.get.mockResolvedValue(type);
+    const cli = (await viaCli(a.client, "schema", { type: "post" })) as any;
+    const mcp = (await viaMcp(b.client, "get_content_type", { name: "post" })) as any;
+    expect(cli).toMatchObject(type);
+    expect(cli.dataSchema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+    expect(cli.dataSchema.required).toEqual(["Title"]);
+    expect(cli.dataSchema.properties.Title.type).toBe("string");
+    expect(mcp).toEqual(cli);
+  });
+
   it("list entries: same client call and arguments, no page unless given", async () => {
     const a = fake();
     const b = fake();

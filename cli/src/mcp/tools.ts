@@ -8,6 +8,8 @@ export const DEFAULT_PAGE_SIZE = 20;
 export const MAX_PAGE_SIZE = 100;
 const MAX_PAGE = 1_000_000;
 const MAX_NAME_LENGTH = 200;
+const DATA_SCHEMA_OMITTED =
+  "dataSchema is left out because the result would be over 256 KB with it. `barako schema <name>` prints it.";
 
 /** Thrown for arguments that do not fit a tool's schema. The server answers it with a usage tool error. */
 export class ArgumentError extends Error {}
@@ -20,6 +22,11 @@ export interface Tool {
   annotations: { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint?: boolean; openWorldHint: false };
   /** What to tell the model when the result is over the size cap. A fixed sentence. */
   tooLarge: string;
+  /**
+   * A smaller form of the data to send when the result is over the size cap, or undefined for none.
+   * `fits` says whether a value would pass the cap once scrubbed and wrapped.
+   */
+  smaller?(data: unknown, fits: (value: unknown) => boolean): unknown;
   /** The id the call aims at, for the log line. Only called after the arguments passed. */
   target?(args: Record<string, unknown>): string | undefined;
   /** Checks the arguments and returns them. Throws ArgumentError. Sends no request. */
@@ -90,7 +97,8 @@ export const TOOLS: readonly Tool[] = [
   {
     name: "get_content_type",
     title: "Get a content type",
-    description: "Show the fields of one content type, by its name. Same as `barako schema <name>`.",
+    description:
+      "Show the fields of one content type, by its name. Same as `barako schema <name>`. The result has `dataSchema`, a JSON Schema for the data of an entry of the type. The API still checks every value. When the result would be over 256 KB, `dataSchema` is left out, and `dataSchemaOmitted` says so when there is room for it.",
     inputSchema: {
       type: "object",
       properties: { name: { type: "string", description: "The content type name, as returned by list_content_types." } },
@@ -105,6 +113,15 @@ export const TOOLS: readonly Tool[] = [
       return { name: checkId(a.name, "name") };
     },
     run: async (client, a) => ({ data: await getContentType(client, a.name as string) }),
+    // dataSchema repeats each declared schema, default and option, so it can double the result. A type
+    // that fit before it was added still fits without it: the note is added only when there is room,
+    // and otherwise the type goes out exactly as it did before dataSchema existed.
+    smaller(data, fits) {
+      if (typeof data !== "object" || data === null || !("dataSchema" in data)) return undefined;
+      const { dataSchema: _, ...type } = data as Record<string, unknown>;
+      const noted = { ...type, dataSchemaOmitted: DATA_SCHEMA_OMITTED };
+      return fits(noted) ? noted : type;
+    },
   },
   {
     name: "list_entries",

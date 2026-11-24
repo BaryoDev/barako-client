@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { KNOWN_FIELD_TYPES } from "../src/data-schema";
 
 // Runs the built CLI against a live server. Skipped unless BARAKO_URL is set.
 // Start the stack in cli/test/compose.yml first. See cli/README.md.
@@ -143,6 +144,7 @@ describe.skipIf(!BASE)("barako against a live server", () => {
   let firstVersion = 0;
   let userToken = "";
   let mcpId = "";
+  let adminToken = "";
 
   beforeAll(async () => {
     tmp = mkdtempSync(join(tmpdir(), "barako-int-"));
@@ -152,6 +154,7 @@ describe.skipIf(!BASE)("barako against a live server", () => {
 
     await waitReady();
     const admin = await login(ADMIN_USER, ADMIN_PASSWORD);
+    adminToken = admin;
 
     // A second run on the same stack finds the blueprint already there.
     await call("POST", "/api/content-types/blueprints/blog", {}, admin).catch((err: Error) => {
@@ -223,6 +226,27 @@ describe.skipIf(!BASE)("barako against a live server", () => {
     expect(run.code).toBe(0);
     expect(run.json.ok).toBe(true);
     expect(JSON.stringify(run.json.result)).toContain("Title");
+  });
+
+  it("schema post prints a dataSchema with Title as a required property", async () => {
+    const run = await barako(["schema", "post"]);
+    expect(run.code).toBe(0);
+    const schema = run.json.result.dataSchema;
+    expect(schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+    expect(Object.getOwnPropertyNames(schema.properties)).toContain("Title");
+    expect(schema.properties.Title.type).toBe("string");
+    expect(schema.required).toContain("Title");
+  });
+
+  it("every field type core describes has a JSON Schema mapping", async () => {
+    const described = await call("GET", "/api/meta/describe", undefined, adminToken);
+    const names: string[] = (described.fieldTypes as { name: string; aliases?: string[] }[]).flatMap((t) => [
+      t.name,
+      ...(t.aliases ?? []),
+    ]);
+    expect(names.length).toBeGreaterThan(0);
+    const missing = names.filter((n) => !KNOWN_FIELD_TYPES.includes(n));
+    expect(missing).toEqual([]);
   });
 
   it("content create makes a draft", async () => {

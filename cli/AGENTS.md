@@ -15,7 +15,7 @@ Run `barako commands` once to see every command and argument. The result has `co
 
 Do these in order.
 
-1. `barako schema post`. Read the fields and which are required. Use the exact field names.
+1. `barako schema post`. Read the fields and which are required. Use the exact field names. `dataSchema` in the result is a JSON Schema for the data; the dry run is still the check.
 2. `barako content create post --set Title=... --set Slug=... --set-file Body=body.md --dry-run`.
    Fix anything that exits 2 before going on. Nothing is saved.
 3. Run the same `barako content create post ...` again with the same field arguments but without `--dry-run`. The entry is a draft. Keep `result.id`.

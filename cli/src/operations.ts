@@ -1,5 +1,6 @@
 // The read operations. The CLI commands and the MCP tools both call these, so the two cannot disagree.
 import { ContentStatus, type BarakoClient, type Content, type ListContentQuery } from "@baryodev/barako-client";
+import { dataSchemaOf } from "./data-schema";
 import { mergeData } from "./fields";
 import { CliError, codeForStatus, toCliError } from "./output";
 
@@ -15,9 +16,10 @@ export function listContentTypes(client: BarakoClient) {
   return client.contentTypes.readable();
 }
 
-/** The fields of one content type. */
-export function getContentType(client: BarakoClient, name: string) {
-  return client.contentTypes.get(name);
+/** The fields of one content type, and `dataSchema`, a JSON Schema for the data of one of its entries. */
+export async function getContentType(client: BarakoClient, name: string) {
+  const type = await client.contentTypes.get(name);
+  return { ...type, dataSchema: dataSchemaOf(type) };
 }
 
 /** One page of entries. Only the fields the caller set are sent. */

@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { BarakoError, type BarakoClient } from "@baryodev/barako-client";
-import { LINE_CAP_BYTES, RESULT_CAP_BYTES, SERVER_VERSION, serve, UNTRUSTED_NOTE } from "./server";
+import { LINE_CAP_BYTES, RESULT_CAP_BYTES, SERVER_VERSION, serve, UNTRUSTED_NOTE, wrap } from "./server";
 import { MAX_PAGE_SIZE } from "./tools";
 import { run } from "../main";
 
@@ -231,6 +231,59 @@ describe("mcp server", () => {
       expect(r.result.content[0].text).toContain("barako CLI");
       expect(r.result.content[0].text).not.toContain("pageSize");
     }
+  });
+
+  it("get_content_type leaves out dataSchema when it would push the result over the cap, and says so", async () => {
+    // One declared schema of 150 KB: the type alone fits, and with its copy in dataSchema it does not.
+    const declared = { description: "x".repeat(150 * 1024) };
+    // A key with a quote and a backslash, so the scrub of the whole stdout line cannot catch it.
+    const odd = 'bcms"x\\y';
+    const type = {
+      name: "post",
+      fields: [
+        { name: "Body", type: "json", isRequired: false, jsonSchema: declared },
+        { name: "Note", type: "string", isRequired: false, description: `see ${odd}` },
+      ],
+    };
+    const { client } = fakeClient({ contentTypes: { readable: vi.fn(), get: vi.fn().mockResolvedValue(type) } });
+    const { out, replies, log } = await session([call(1, "get_content_type", { name: "post" })], { client, secrets: [odd] });
+    const result = replies[0]!.result;
+    expect(result.isError).toBe(false);
+    expect(Buffer.byteLength(result.content[0].text, "utf8")).toBeLessThanOrEqual(RESULT_CAP_BYTES);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.data).not.toHaveProperty("dataSchema");
+    expect(body.data.dataSchemaOmitted).toContain("barako schema <name>");
+    expect(body.data.fields[0].jsonSchema.description).toHaveLength(150 * 1024);
+    expect(body.data.fields[1].description).toBe("see [redacted]");
+    expect(out.join("\n")).not.toContain(odd);
+    expect(JSON.stringify(replies[0])).not.toContain(odd);
+    expect(log[0]).toContain("status=ok");
+  });
+
+  it("get_content_type still returns a type that is exactly at the cap without dataSchema", async () => {
+    const typeWith = (n: number) => ({
+      name: "post",
+      fields: [{ name: "Body", type: "json", isRequired: false, jsonSchema: { description: "x".repeat(n) } }],
+    });
+    // The type alone wraps to exactly the cap, which passed before dataSchema was added.
+    const n = RESULT_CAP_BYTES - Buffer.byteLength(wrap(typeWith(0)), "utf8");
+    const type = typeWith(n);
+    expect(Buffer.byteLength(wrap(type), "utf8")).toBe(RESULT_CAP_BYTES);
+    const { client } = fakeClient({ contentTypes: { readable: vi.fn(), get: vi.fn().mockResolvedValue(type) } });
+    const { replies, log } = await session([call(1, "get_content_type", { name: "post" })], { client });
+    const result = replies[0]!.result;
+    expect(result.isError).toBe(false);
+    expect(result.content[0].text).toBe(wrap(type));
+    expect(log[0]).toContain("status=ok");
+  });
+
+  it("get_content_type with a small type keeps dataSchema", async () => {
+    const type = { name: "post", fields: [{ name: "Title", type: "string", isRequired: true }] };
+    const { client } = fakeClient({ contentTypes: { readable: vi.fn(), get: vi.fn().mockResolvedValue(type) } });
+    const { replies } = await session([call(1, "get_content_type", { name: "post" })], { client });
+    const body = JSON.parse(replies[0]!.result.content[0].text);
+    expect(body.data.dataSchema.required).toEqual(["Title"]);
+    expect(body.data).not.toHaveProperty("dataSchemaOmitted");
   });
 
   it("caps an error message over the limit and keeps the code and status", async () => {

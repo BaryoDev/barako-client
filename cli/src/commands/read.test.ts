@@ -151,12 +151,13 @@ describe("read commands", () => {
     expect(res).toEqual([{ version: 1 }]);
   });
 
-  it("schema post returns contentTypes.get as is", async () => {
-    const shape = { name: "post", fields: [] };
+  it("schema post returns contentTypes.get plus a dataSchema", async () => {
+    const shape = { name: "post", fields: [{ name: "Title", type: "string", isRequired: true }] };
     const get = vi.fn().mockResolvedValue(shape);
-    const res = await exec("schema", fake({ contentTypes: { get } }), { type: "post" });
+    const res = (await exec("schema", fake({ contentTypes: { get } }), { type: "post" })) as any;
     expect(get).toHaveBeenCalledWith("post");
-    expect(res).toBe(shape);
+    expect(res).toMatchObject(shape);
+    expect(res.dataSchema.required).toEqual(["Title"]);
   });
 
   it("types returns the readable type names", async () => {
