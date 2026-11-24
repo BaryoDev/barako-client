@@ -239,8 +239,10 @@ function fragmentOf(field: ReadableField): Schema {
   const build = BUILDERS.get(canonical);
   const serverSets = isComputed(field) || canonical === "token";
   let out: Schema = build ? build({ field }) : { description: UNKNOWN_TYPE_NOTE };
-  // An unknown type accepts anything already, null included.
-  if (build && !serverSets && !field.isRequired) out = orNull(out);
+  // An unknown type accepts anything already, null included. A schema the field declares may hold
+  // keywords that apply to null too (const, allOf, $ref), so it is wrapped rather than widened.
+  const declared = canonical === "json" && isObject(field.jsonSchema);
+  if (build && !serverSets && !field.isRequired) out = declared ? { anyOf: [out, { type: "null" }] } : orNull(out);
   if (serverSets) out.readOnly = true;
   if (field.defaultValue !== undefined && field.defaultValue !== null) out.default = copyJson(field.defaultValue);
   if (isObject(field.validationRules) && Object.keys(field.validationRules).length > 0) {
