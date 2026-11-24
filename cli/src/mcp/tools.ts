@@ -2,6 +2,8 @@ import type { BarakoClient, ListContentQuery } from "@baryodev/barako-client";
 import { getContentType, getEntry, listContentTypes, listEntries } from "../operations";
 import type { Plan, PlanStore } from "./plans";
 
+/** The largest result a tool returns, and the largest data a plan keeps. */
+export const RESULT_CAP_BYTES = 256 * 1024;
 export const DEFAULT_PAGE_SIZE = 20;
 export const MAX_PAGE_SIZE = 100;
 const MAX_PAGE = 1_000_000;

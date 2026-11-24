@@ -2,14 +2,15 @@ import { StringDecoder } from "node:string_decoder";
 import type { BarakoClient } from "@baryodev/barako-client";
 import { toCliError, scrubText, scrubValue } from "../output";
 import { PlanStore } from "./plans";
-import { ArgumentError, type RunContext, type Tool } from "./tools";
+import { ArgumentError, RESULT_CAP_BYTES, type RunContext, type Tool } from "./tools";
 import { toolsFor } from "./writes";
+
+export { RESULT_CAP_BYTES };
 
 export const SERVER_NAME = "barako";
 export const SERVER_VERSION = "0.1.0";
 /** Newest first. */
 export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
-export const RESULT_CAP_BYTES = 256 * 1024;
 /** A line longer than this is refused. It keeps one bad client from filling memory. */
 export const LINE_CAP_BYTES = 1024 * 1024;
 

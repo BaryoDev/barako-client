@@ -22,8 +22,7 @@ import {
   type Plan,
   type PlanAction,
 } from "./plans";
-import { RESULT_CAP_BYTES } from "./server";
-import { ArgumentError, checkId, shape, TOOLS, type RunContext, type RunResult, type Tool } from "./tools";
+import { ArgumentError, checkId, RESULT_CAP_BYTES, shape, TOOLS, type RunContext, type RunResult, type Tool } from "./tools";
 
 const NO_VERSION = "The server returned neither a version nor an ETag for this entry, so no plan was made.";
 const CHANGED = "The entry changed since the plan, plan again.";
