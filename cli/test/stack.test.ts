@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,7 @@ import {
   parsePort,
   realDeps,
   resolveKit,
+  createPrivateFile,
   type DockerResult,
   type HttpReply,
   type HttpRequest,
@@ -42,6 +44,10 @@ let volume: boolean;
 let labelled: string;
 let httpCalls: HttpRequest[];
 let api: (req: HttpRequest) => HttpReply;
+let clock: number;
+/** How many services run after a good compose up. */
+let runningAfterUp: number;
+const SERVICE_NAMES = ["postgres", "api", "site", "console", "caddy"];
 
 const FAKE_KEY = "fake-api-key-for-tests";
 const FAKE_JWT = "fake-jwt-for-tests";
@@ -51,6 +57,7 @@ const happyApi = (req: HttpRequest): HttpReply => {
   const path = new URL(req.url).pathname;
   if (path === "/health/ready") return { status: 200, body: "Healthy" };
   if (path === "/api/auth/login") return { status: 200, body: JSON.stringify({ token: FAKE_JWT, refreshToken: "fake-refresh" }) };
+  if (path === "/api/content-types" && req.method === "GET") return { status: 200, body: "[]" };
   if (path === "/api/tenants") return { status: 200, body: "{}" };
   if (path.startsWith("/api/content-types/blueprints/")) return { status: 200, body: "{}" };
   if (path === "/api/api-keys") return { status: 200, body: JSON.stringify({ key: FAKE_KEY }) };
@@ -69,9 +76,13 @@ function fakeDeps(): StackDeps {
       if (args[0] === "compose" && args[1] === "version") return ok({ stdout: composeVersion + "\n" });
       if (args.includes("ps") && args.includes("--status")) {
         if (psFails) return ok({ code: 1, stderr: "ps broke" });
-        return ok({ stdout: Array.from({ length: running }, (_, i) => `id${i}`).join("\n") });
+        return ok({ stdout: SERVICE_NAMES.slice(0, running).join("\n") });
       }
-      if (args.includes("up")) return ok(upReply);
+      if (args.includes("up")) {
+        const r = ok(upReply);
+        if (r.code === 0) running = runningAfterUp;
+        return r;
+      }
       return ok();
     },
     async portFree(port) {
@@ -87,7 +98,10 @@ function fakeDeps(): StackDeps {
       httpCalls.push(req);
       return api(req);
     },
-    async sleep() {},
+    async sleep(ms) {
+      clock += ms;
+    },
+    now: () => clock,
   };
 }
 
@@ -122,6 +136,8 @@ beforeEach(() => {
   labelled = "";
   httpCalls = [];
   api = happyApi;
+  clock = 0;
+  runningAfterUp = 5;
   spawnMock.mockReset();
 });
 
@@ -363,6 +379,7 @@ describe("up output", () => {
     running = 5;
     const out = await cmd("up")({});
     expect(out.alreadyRunning).toBe(true);
+    expect(out.bootstrapped).toBe(false);
     expect(calls.some((c) => c.args.includes("up"))).toBe(false);
     expect(files.map((f) => readFileSync(join(dir(), f), "utf8"))).toEqual(before);
   });
@@ -755,9 +772,10 @@ describe("bootstrap", () => {
       "POST /api/tenants",
       "POST /api/auth/login",
       "POST /api/content-types/blueprints/site",
+      "POST /api/content-types/blueprints/blog",
       "POST /api/api-keys",
     ]);
-    const [, login1, tenant, login2, blueprint, key] = httpCalls as [HttpRequest, HttpRequest, HttpRequest, HttpRequest, HttpRequest, HttpRequest];
+    const [, login1, tenant, login2, blueprint, , key] = httpCalls as HttpRequest[] as [HttpRequest, HttpRequest, HttpRequest, HttpRequest, HttpRequest, HttpRequest, HttpRequest];
     const env = readFileSync(join(dir(), ".env"), "utf8");
     const password = /ADMIN_PASSWORD=(.*)/.exec(env)![1];
     expect(login1.json).toEqual({ Username: "admin", Password: password });
@@ -799,7 +817,10 @@ describe("bootstrap", () => {
     running = 5;
     const out = await cmd("up")({});
     expect(out.alreadyRunning).toBe(true);
-    expect(httpCalls).toEqual([]);
+    expect(out.bootstrapped).toBe(false);
+    // One cheap key check, no sign-in and no new key.
+    expect(paths()).toEqual(["GET /api/content-types"]);
+    expect(header(httpCalls[0]!, "authorization")).toBe(`Bearer ${FAKE_KEY}`);
     expect(readFileSync(join(dir(), "api-key"), "utf8")).toBe(key);
     expect(out.mcp).toContain("--key-file");
   });
@@ -808,8 +829,31 @@ describe("bootstrap", () => {
     await cmd("up")({});
     httpCalls = [];
     running = 0;
+    const out = await cmd("up")({});
+    expect(paths()).toEqual(["GET /api/content-types"]);
+    expect(out.bootstrapped).toBe(false);
+  });
+
+  it("a key that core refuses (401) is replaced without a new tenant", async () => {
     await cmd("up")({});
-    expect(httpCalls).toEqual([]);
+    api = (r) => (new URL(r.url).pathname === "/api/content-types" && r.method === "GET" ? { status: 401, body: "" } : happyApi(r));
+    httpCalls = [];
+    running = 5;
+    const out = await cmd("up")({});
+    expect(out.bootstrapped).toBe(true);
+    expect(paths()).not.toContain("POST /api/tenants");
+    expect(paths()).toContain("POST /api/api-keys");
+    expect(out.notice).toContain("new API key");
+  });
+
+  it("an API that does not answer the key check is an error, not a new key", async () => {
+    await cmd("up")({});
+    api = (r) => (new URL(r.url).pathname === "/api/content-types" ? { status: 0, body: "" } : happyApi(r));
+    httpCalls = [];
+    running = 5;
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("network");
+    expect(paths()).not.toContain("POST /api/api-keys");
   });
 
   it("makes no second key when the key file is there", async () => {
@@ -819,9 +863,11 @@ describe("bootstrap", () => {
     writeFileSync(join(dir(), "state.json"), JSON.stringify(state), { mode: 0o600 });
     httpCalls = [];
     running = 5;
-    await cmd("up")({});
+    const out = await cmd("up")({});
+    expect(out.notice).toContain("earlier barako up");
+    expect(out.notice).toContain("365 days");
     expect(paths()).not.toContain("POST /api/api-keys");
-    expect(paths()).toContain("POST /api/content-types/blueprints/site");
+    expect(paths()).toContain("POST /api/content-types/blueprints/blog");
     expect(readFileSync(join(dir(), "api-key"), "utf8")).toBe(FAKE_KEY + "\n");
   });
 
@@ -848,16 +894,48 @@ describe("bootstrap", () => {
     expect(existsSync(join(dir(), "api-key"))).toBe(false);
   });
 
-  it("a kit that was applied before (409) is fine, an unknown kit (404) is an error", async () => {
-    api = (r) => (new URL(r.url).pathname.startsWith("/api/content-types/") ? { status: 409, body: "LEAKED-BODY" } : happyApi(r));
+  const ALREADY = JSON.stringify({ errors: { blueprint: ["Blueprint 'blog' was not applied: post already exist(s) in this tenant. Applying is additive and never replaces a type."] } });
+  const onKit = (reply: HttpReply) => (r: HttpRequest): HttpReply => (new URL(r.url).pathname.startsWith("/api/content-types/blueprints/") ? reply : happyApi(r));
+
+  it("a kit that already exists in the tenant (409 with core's text) is fine", async () => {
+    api = onKit({ status: 409, body: ALREADY });
     await cmd("up")({});
     expect(existsSync(join(dir(), "api-key"))).toBe(true);
+  });
 
-    rmSync(dir(), { recursive: true, force: true });
-    api = (r) => (new URL(r.url).pathname.startsWith("/api/content-types/") ? { status: 404, body: "LEAKED-BODY" } : happyApi(r));
+  it("any other 409 on a kit is a conflict, with core's reasons and no raw body", async () => {
+    api = onKit({ status: 409, body: JSON.stringify({ errors: { name: ["The name 'post' is held by an earlier type.\u0007"] }, trace: "LEAKED-BODY" }) });
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("conflict");
+    expect(e.message).toContain("held by an earlier type");
+    expect(e.message).not.toContain("LEAKED-BODY");
+    // eslint-disable-next-line no-control-regex
+    expect(e.message).not.toMatch(/[\u0000-\u001f]/);
+    expect(existsSync(join(dir(), "api-key"))).toBe(false);
+  });
+
+  it("an unknown kit (404) is an error", async () => {
+    api = onKit({ status: 404, body: "LEAKED-BODY" });
     const e = await fails(() => cmd("up")({}));
     expect(e.code).toBe("not_found");
     expect(e.message).not.toContain("LEAKED-BODY");
+  });
+
+  it("a failed up leaves no marker, so the next up tries the whole bootstrap again", async () => {
+    api = onKit({ status: 500, body: "" });
+    await fails(() => cmd("up")({}));
+    expect(JSON.parse(readFileSync(join(dir(), "state.json"), "utf8")).bootstrap).toBeUndefined();
+    api = happyApi;
+    running = 5;
+    httpCalls = [];
+    const out = await cmd("up")({});
+    expect(out.bootstrapped).toBe(true);
+    expect(paths()).toContain("POST /api/api-keys");
+  });
+
+  it("the marker holds the kit and, for a file, its hash", async () => {
+    await cmd("up")({});
+    expect(JSON.parse(readFileSync(join(dir(), "state.json"), "utf8")).bootstrap).toEqual({ kit: "blog" });
   });
 
   it("signs in once and does not retry on a refusal", async () => {
@@ -868,7 +946,33 @@ describe("bootstrap", () => {
       const e = await fails(() => cmd("up")({}));
       expect(httpCalls.filter((c) => c.url.endsWith("/api/auth/login"))).toHaveLength(1);
       expect(e.message).not.toContain("LEAKED-BODY");
-      if (status === 429) expect(e.message).toContain("15 minutes");
+      if (status === 429) {
+        expect(e.message).toContain("15 minutes");
+        expect(e.code).toBe("server");
+      }
+    }
+  });
+
+  it("a refused tenant sign-in says so, apart from a wrong password", async () => {
+    let logins = 0;
+    api = (r) => {
+      if (new URL(r.url).pathname === "/api/auth/login" && ++logins === 2) return { status: 401, body: "LEAKED-BODY" };
+      return happyApi(r);
+    };
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("unauthorized");
+    expect(e.message).toContain("tenant client");
+    expect(e.message).not.toContain("password in .env");
+    expect(e.message).not.toContain("LEAKED-BODY");
+  });
+
+  it("no failing path puts the admin password in its message", async () => {
+    for (const path of ["/health/ready", "/api/auth/login", "/api/tenants", "/api/content-types/blueprints/blog", "/api/api-keys"]) {
+      rmSync(dir(), { recursive: true, force: true });
+      api = (r) => (new URL(r.url).pathname === path ? { status: 500, body: "x" } : happyApi(r));
+      const e = await fails(() => cmd("up")({}));
+      const password = /ADMIN_PASSWORD=(.*)/.exec(readFileSync(join(dir(), ".env"), "utf8"))![1]!;
+      expect(e.message, path).not.toContain(password);
     }
   });
 
@@ -891,7 +995,9 @@ describe("bootstrap", () => {
     api = () => ({ status: 503, body: "" });
     const e = await fails(() => cmd("up")({}));
     expect(e.code).toBe("network");
+    expect(e.message).toContain("90 seconds");
     expect(httpCalls.length).toBe(90);
+    expect(httpCalls.every((c) => (c.timeoutMs ?? 0) <= 5000)).toBe(true);
   });
 
   it("reset removes the key and the marker, so the next up starts over", async () => {
@@ -934,15 +1040,51 @@ describe("kit", () => {
 
   it("reads a path as text and takes its name from the file", () => {
     const text = JSON.stringify({ name: " Press-Kit ", contentTypes: [] });
-    expect(resolveKit(file(text))).toEqual({ name: "press-kit", file: text });
+    const got = resolveKit(file(text))!;
+    expect(got).toMatchObject({ name: "press-kit", file: text });
+    expect(got.hash).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("refuses a path that is not JSON, has no usable name, is a folder or is too large", () => {
-    expect(() => resolveKit(file("module.exports = 1;"))).toThrow(/JSON/);
-    expect(() => resolveKit(file("{}"))).toThrow(/name/);
-    expect(() => resolveKit(file(JSON.stringify({ name: "Bad Name" })))).toThrow(/name/);
+    expect(() => resolveKit(file("module.exports = 1;"))).toThrow(/plain JSON/);
+    expect(() => resolveKit(file("{}"))).toThrow(/"name"/);
+    expect(() => resolveKit(file(JSON.stringify({ name: "Bad Name" })))).toThrow(/"name"/);
     expect(() => resolveKit(home)).toThrow(/--kit/);
     expect(() => resolveKit(file(JSON.stringify({ name: "big", pad: "x".repeat(300 * 1024) })))).toThrow(/256 KB/);
+  });
+
+  it("strips a byte order mark and refuses a name that is a built-in kit", () => {
+    expect(resolveKit(file("\uFEFF" + JSON.stringify({ name: "mine" })))!.name).toBe("mine");
+    for (const n of ["blog", "devsite", "docs", "email", "events", "portfolio", "site", "Blog"]) {
+      expect(() => resolveKit(file(JSON.stringify({ name: n }))), n).toThrow(/built-in/);
+    }
+  });
+
+  it("the blueprints folder and the kit file can be read by core, the secrets stay 0600", async () => {
+    const oldMask = process.umask(0o077);
+    try {
+      await cmd("up")({ kit: file(JSON.stringify({ name: "mine" })) });
+      expect(statSync(join(dir(), "blueprints")).mode & 0o777).toBe(0o755);
+      expect(statSync(join(dir(), "blueprints", "mine.json")).mode & 0o777).toBe(0o644);
+      expect(statSync(join(dir(), ".env")).mode & 0o777).toBe(0o600);
+      expect(statSync(join(dir(), "api-key")).mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(oldMask);
+    }
+  });
+
+  it("an edited kit file is applied again with a notice, without a new key or tenant", async () => {
+    const path = file(JSON.stringify({ name: "mine", v: 1 }));
+    await cmd("up")({ kit: path });
+    httpCalls = [];
+    running = 5;
+    writeFileSync(path, JSON.stringify({ name: "mine", v: 2 }));
+    const out = await cmd("up")({ kit: path });
+    expect(out.bootstrapped).toBe(true);
+    expect(out.notice).toContain("kit file changed");
+    expect(paths()).toContain("POST /api/content-types/blueprints/mine");
+    expect(paths()).not.toContain("POST /api/api-keys");
+    expect(paths()).not.toContain("POST /api/tenants");
   });
 
   it("applies a named kit, encoded in the path", async () => {
@@ -954,6 +1096,7 @@ describe("kit", () => {
     const text = JSON.stringify({ name: "mine", contentTypes: [] });
     await cmd("up")({ kit: file(text) });
     expect(readFileSync(join(dir(), "blueprints", "mine.json"), "utf8")).toBe(text);
+    expect(paths()).toContain("POST /api/content-types/blueprints/site");
     expect(paths()).toContain("POST /api/content-types/blueprints/mine");
     expect(COMPOSE_YML).toContain("./blueprints:/blueprints:ro");
     expect(COMPOSE_YML).toContain("Blueprints__Path: /blueprints");
@@ -966,5 +1109,95 @@ describe("kit", () => {
     await cmd("up")({ kit: "other" });
     expect(paths()).toContain("POST /api/content-types/blueprints/other");
     expect(paths()).not.toContain("POST /api/api-keys");
+  });
+});
+
+describe("services after up", () => {
+  it("names the services that are not running after compose up returns", async () => {
+    runningAfterUp = 3;
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("server");
+    expect(e.message).toContain("console, caddy");
+    expect(httpCalls).toEqual([]);
+  });
+
+  it("asks compose for service names, not a count of ids", async () => {
+    await cmd("up")({});
+    const ps = calls.find((c) => c.args.includes("ps"))!;
+    expect(ps.args).toEqual(expect.arrayContaining(["--services", "--status", "running"]));
+  });
+
+  it("a stack with a service down is not alreadyRunning, even with five lines of output", async () => {
+    await cmd("up")({});
+    running = 4;
+    const out = await cmd("up")({});
+    expect(out.alreadyRunning).toBe(false);
+  });
+});
+
+describe("createPrivateFile", () => {
+  it("refuses to replace a file that is there, and says so as a conflict", () => {
+    const d = mkdtempSync(join(tmpdir(), "barako-cpf-"));
+    try {
+      createPrivateFile(d, "api-key", "first\n");
+      let err: { code?: string; message?: string } = {};
+      try {
+        createPrivateFile(d, "api-key", "second\n");
+      } catch (e) {
+        err = e as typeof err;
+      }
+      expect(err.code).toBe("conflict");
+      expect(readFileSync(join(d, "api-key"), "utf8")).toBe("first\n");
+      expect(existsSync(join(d, "api-key.tmp"))).toBe(false);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the real http", () => {
+  it("sends json, headers and a method, does not follow a redirect and reads the body", async () => {
+    const seen: { method?: string; auth?: string; body: string }[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        seen.push({ method: req.method, auth: req.headers.authorization, body });
+        if (req.url === "/redirect") {
+          res.writeHead(302, { location: "/elsewhere" });
+          res.end();
+        } else {
+          res.writeHead(201);
+          res.end("hello");
+        }
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const http = realDeps().http;
+      const ok = await http({ method: "POST", url: `http://127.0.0.1:${port}/a`, json: { x: 1 }, headers: { authorization: "Bearer t" } });
+      expect(ok).toEqual({ status: 201, body: "hello" });
+      expect(seen[0]).toEqual({ method: "POST", auth: "Bearer t", body: '{"x":1}' });
+      const moved = await http({ method: "GET", url: `http://127.0.0.1:${port}/redirect` });
+      expect(moved.status).toBe(302);
+      expect(seen).toHaveLength(2);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it("answers status 0 when nothing listens, and when the request is too slow", async () => {
+    const http = realDeps().http;
+    expect((await http({ method: "GET", url: "http://127.0.0.1:1/x" })).status).toBe(0);
+    const server = createServer(() => {});
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      expect((await http({ method: "GET", url: `http://127.0.0.1:${port}/`, timeoutMs: 100 })).status).toBe(0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    }
   });
 });
