@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 import { run } from "../src/main";
 import { commands } from "../src/registry";
 import {
+  dockerEnv,
   makeStackCommands,
   parsePort,
   realDeps,
@@ -33,6 +34,9 @@ let composeVersion: string;
 let dockerMissing: boolean;
 let busyPorts: number[];
 let counter: number;
+let psFails: boolean;
+let volume: boolean;
+let labelled: string;
 
 function fakeDeps(): StackDeps {
   return {
@@ -41,8 +45,11 @@ function fakeDeps(): StackDeps {
       const ok = (r: Reply = {}): DockerResult => ({ code: 0, stdout: "", stderr: "", ...r });
       if (dockerMissing) return ok({ code: 127, stderr: "docker: not found" });
       if (args[0] === "version") return ok();
+      if (args[0] === "volume" && args[1] === "inspect") return ok({ code: volume ? 0 : 1 });
+      if (args[0] === "ps") return ok({ stdout: labelled });
       if (args[0] === "compose" && args[1] === "version") return ok({ stdout: composeVersion + "\n" });
       if (args.includes("ps") && args.includes("--status")) {
+        if (psFails) return ok({ code: 1, stderr: "ps broke" });
         return ok({ stdout: Array.from({ length: running }, (_, i) => `id${i}`).join("\n") });
       }
       if (args.includes("up")) return ok(upReply);
@@ -86,6 +93,9 @@ beforeEach(() => {
   dockerMissing = false;
   busyPorts = [];
   counter = 0;
+  psFails = false;
+  volume = false;
+  labelled = "";
   spawnMock.mockReset();
 });
 
@@ -106,6 +116,10 @@ describe("port", () => {
     expect(parsePort(1024)).toBe(1024);
     expect(parsePort(65535)).toBe(65535);
     expect(parsePort("8080")).toBe(8080);
+  });
+
+  it("rejects 5005, the API host port", () => {
+    expect(() => parsePort(5005)).toThrow(/5005/);
   });
 
   it.each([1023, 65536, 0, -1, 8080.5, NaN, "80abc", "", " 8080", "0x1F90", "1e3", undefined])(
@@ -139,6 +153,14 @@ describe("port", () => {
 });
 
 describe("files", () => {
+  let oldMask = 0;
+  beforeEach(() => {
+    oldMask = process.umask(0o022);
+  });
+  afterEach(() => {
+    process.umask(oldMask);
+  });
+
   it("writes .env as 0600 in a 0700 directory, and only when absent", async () => {
     await cmd("up")({});
     expect(statSync(dir()).mode & 0o777).toBe(0o700);
@@ -193,7 +215,7 @@ describe("files", () => {
   });
 
   it("sets hosts, origins, tenant and raised limits", () => {
-    expect(COMPOSE_YML).toContain('AllowedHosts: "api;api.localhost;admin.localhost;localhost;127.0.0.1"');
+    expect(COMPOSE_YML).toContain('AllowedHosts: "api;api.localhost;admin.localhost;client.localhost;localhost;127.0.0.1"');
     expect(COMPOSE_YML).toContain("http://admin.localhost:${PORT},http://client.localhost:${PORT}");
     expect(COMPOSE_YML).toContain("CMS_TENANT: client");
     expect(COMPOSE_YML).toContain("Tenancy__Mode: Single");
@@ -204,11 +226,30 @@ describe("files", () => {
   });
 
   it("Caddy routes the hosts as designed", () => {
-    expect(CADDYFILE).toMatch(/http:\/\/client\.localhost:8080 \{\s+handle \/files\* \{\s+reverse_proxy api:8080 \{\s+header_up X-Tenant client/);
-    expect(CADDYFILE).toMatch(/http:\/\/admin\.localhost:8080 \{\s+handle \/api\/\* \{\s+reverse_proxy api:8080/);
+    expect(CADDYFILE).toMatch(/http:\/\/client\.localhost:8080 \{\s+handle \/api\/public\/files\* \{\s+reverse_proxy api:8080 \{\s+header_up Host api\s+header_up X-Tenant client/);
+    expect(CADDYFILE).not.toMatch(/handle \/files/);
+    expect(CADDYFILE).toMatch(/http:\/\/admin\.localhost:8080 \{\s+handle \/health \{\s+reverse_proxy api:8080/);
+    expect(CADDYFILE).toMatch(/handle \/api\/\* \{\s+reverse_proxy api:8080/);
     expect(CADDYFILE).toContain("reverse_proxy console:3000");
     expect(CADDYFILE).toContain("reverse_proxy site:3000");
     expect(CADDYFILE).toContain("http://api.localhost:8080");
+  });
+
+  it("every Caddy proxy to api sets a Host that core allows", () => {
+    const allowed = /AllowedHosts: "([^"]+)"/.exec(COMPOSE_YML)![1]!.split(";");
+    const blocks = [...CADDYFILE.matchAll(/reverse_proxy api:8080 \{([^}]*)\}/g)];
+    const plain = [...CADDYFILE.matchAll(/reverse_proxy api:8080(?! \{)/g)];
+    expect(plain).toEqual([]);
+    expect(blocks.length).toBe(4);
+    for (const b of blocks) {
+      const host = /header_up Host (\S+)/.exec(b[1]!)?.[1];
+      expect(allowed).toContain(host);
+    }
+    expect(allowed).toContain("client.localhost");
+  });
+
+  it("the site service has no SITE_URL", () => {
+    expect(COMPOSE_YML).not.toContain("SITE_URL");
   });
 
   it("versions.json pins core 5.9.0 and gives each image a tag and digest", () => {
@@ -233,7 +274,7 @@ describe("docker calls", () => {
     }
     const up = calls.find((c) => c.args.includes("up"))!;
     expect(up.args).toEqual([
-      "compose", "-p", "barako", "-f", join(dir(), "compose.yml"), "--env-file", join(dir(), ".env"), "up", "-d", "--wait",
+      "compose", "-p", "barako", "-f", join(dir(), "compose.yml"), "--env-file", join(dir(), ".env"), "up", "-d", "--wait", "--wait-timeout", "600",
     ]);
     expect(up.cwd).toBe(dir());
   });
@@ -282,7 +323,7 @@ describe("up output", () => {
     expect(out.urls.apiLocal).toBe("http://127.0.0.1:5005");
     expect(out.adminUser).toBe("admin");
     expect(out.passwordFile).toBe(join(dir(), ".env"));
-    expect(out.mcp).toContain("barako mcp");
+    expect(out).not.toHaveProperty("mcp");
     const secrets = readFileSync(join(dir(), ".env"), "utf8").trim().split("\n").map((l) => l.split("=")[1]!);
     for (const s of secrets) expect(JSON.stringify(out)).not.toContain(s);
   });
@@ -412,5 +453,265 @@ describe("status", () => {
       { service: "api", state: "running", health: "healthy" },
       { service: "site", state: "exited" },
     ]);
+  });
+});
+
+const SECRET_KEYS = ["DB_PASSWORD", "APP_DB_PASSWORD", "JWT_KEY", "PRESS_SECRET", "ADMIN_PASSWORD"];
+
+function fakeChild(code: number) {
+  const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+  setTimeout(() => child.emit("close", code), 0);
+  return child;
+}
+
+describe("docker version", () => {
+  it.each(["2.40.3-desktop.1", "v2.24.0", "2.40.3-rc.1", "5.2.0", "2.17.0"])("accepts %s", async (v) => {
+    composeVersion = v;
+    await cmd("up")({});
+    expect(calls.some((c) => c.args.includes("up"))).toBe(true);
+  });
+
+  it("refuses text that is not a version", async () => {
+    composeVersion = "garbage";
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("Could not read");
+    expect(existsSync(dir())).toBe(false);
+  });
+
+  it.each(["2.16.9", "1.29.2", "2.9.0-desktop.1"])("refuses %s as too old", async (v) => {
+    composeVersion = v;
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("too old");
+  });
+});
+
+describe("docker environment", () => {
+  it("drops exported secret names and lets the compose values win", () => {
+    const env = dockerEnv(
+      { JWT_KEY: "from-shell", DB_PASSWORD: "x", PATH: "/bin", PORT: "1" },
+      { PORT: "8080", CORE_IMAGE: "img" },
+    );
+    expect(env.JWT_KEY).toBeUndefined();
+    expect(env.DB_PASSWORD).toBeUndefined();
+    expect(env.PATH).toBe("/bin");
+    expect(env.PORT).toBe("8080");
+  });
+
+  it("the real runner passes no exported secret to spawn", async () => {
+    process.env.JWT_KEY = "shell-value-not-real";
+    try {
+      spawnMock.mockReturnValue(fakeChild(0));
+      await realDeps().docker(["compose", "ps"], { env: { PORT: "1" } });
+      expect(spawnMock.mock.calls[0]![2].env.JWT_KEY).toBeUndefined();
+    } finally {
+      delete process.env.JWT_KEY;
+    }
+  });
+});
+
+describe("a half-made stack", () => {
+  it("up stops when .env is gone and state.json remains", async () => {
+    await cmd("up")({});
+    rmSync(join(dir(), ".env"));
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("barako reset");
+  });
+
+  it("up stops when .env is gone and the volume remains", async () => {
+    volume = true;
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("barako reset");
+    expect(existsSync(join(dir(), ".env"))).toBe(false);
+  });
+
+  it("up stops when .env lacks a key or is empty", async () => {
+    await cmd("up")({});
+    writeFileSync(join(dir(), ".env"), "DB_PASSWORD=a\n", { mode: 0o600 });
+    expect((await fails(() => cmd("up")({}))).message).toContain("barako reset");
+    writeFileSync(join(dir(), ".env"), "", { mode: 0o600 });
+    expect((await fails(() => cmd("up")({}))).message).toContain("barako reset");
+  });
+
+  it("reset with .env gone removes containers by label and the volume", async () => {
+    await cmd("up")({});
+    rmSync(join(dir(), ".env"));
+    volume = true;
+    labelled = "c1\nc2\n";
+    calls = [];
+    const out = await cmd("reset")({ yes: true });
+    expect(out.reset).toBe(true);
+    const argv = calls.map((c) => c.args.join(" "));
+    expect(argv).toContain("rm -f c1 c2");
+    expect(argv).toContain("volume rm barako_pgdata");
+    expect(existsSync(join(dir(), "state.json"))).toBe(false);
+  });
+
+  it("reset with no state.json removes the volume", async () => {
+    volume = true;
+    const out = await cmd("reset")({ yes: true });
+    expect(out.reset).toBe(true);
+    expect(calls.map((c) => c.args.join(" "))).toContain("volume rm barako_pgdata");
+  });
+
+  it("reset with nothing set up says so before it asks", async () => {
+    const ask = vi.fn();
+    const out = await cmd("reset")({}, { isTty: true, ask });
+    expect(out.reset).toBe(false);
+    expect(ask).not.toHaveBeenCalled();
+  });
+});
+
+describe(".env", () => {
+  it("is created through a link and leaves no .env.tmp", async () => {
+    await cmd("up")({});
+    expect(existsSync(join(dir(), ".env.tmp"))).toBe(false);
+    const text = readFileSync(join(dir(), ".env"), "utf8");
+    for (const k of SECRET_KEYS) expect(text).toContain(`${k}=`);
+  });
+
+  it("an existing .env is made 0600 again", async () => {
+    await cmd("up")({});
+    chmodSync(join(dir(), ".env"), 0o644);
+    await cmd("up")({});
+    expect(statSync(join(dir(), ".env")).mode & 0o777).toBe(0o600);
+  });
+
+  it("reads export prefixes and quotes", async () => {
+    await cmd("up")({});
+    const quoted = SECRET_KEYS.map((k, i) => (i % 2 ? `export ${k}="v${i}x"` : `${k}='v${i}x'`)).join("\n");
+    writeFileSync(join(dir(), ".env"), quoted + "\n", { mode: 0o600 });
+    upReply = { code: 1, stderr: "leak v0x v1x" };
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).not.toContain("v0x");
+    expect(e.message).not.toContain("v1x");
+  });
+});
+
+describe("running states", () => {
+  it.each([1, 2, 3, 4])("with %i services up, up goes on and keeps the settings", async (n) => {
+    await cmd("up")({ latest: true });
+    running = n;
+    calls = [];
+    const out = await cmd("up")({});
+    expect(out.alreadyRunning).toBe(false);
+    const up = calls.find((c) => c.args.includes("up"))!;
+    expect(up.env!.CORE_IMAGE).toBe("ghcr.io/baryodev/barako-cms:latest");
+    expect(up.args).toContain("--pull");
+  });
+
+  it("a partial stack at latest refuses an explicit change", async () => {
+    await cmd("up")({ latest: true });
+    running = 2;
+    expect((await fails(() => cmd("up")({ port: 9000 }))).code).toBe("conflict");
+  });
+
+  it("a stopped latest stack comes back pinned without the flag", async () => {
+    await cmd("up")({ latest: true });
+    running = 0;
+    calls = [];
+    await cmd("up")({});
+    const up = calls.find((c) => c.args.includes("up"))!;
+    expect(up.env!.CORE_IMAGE).toContain("5.9.0");
+    expect(up.args).not.toContain("--pull");
+  });
+
+  it("--latest passes --pull always and --wait-timeout", async () => {
+    await cmd("up")({ latest: true });
+    const up = calls.find((c) => c.args.includes("up"))!;
+    expect(up.args.join(" ")).toContain("--pull always");
+    expect(up.args.join(" ")).toContain("--wait-timeout 600");
+  });
+
+  it("up tells stderr that images are pulled", async () => {
+    const log = vi.fn();
+    await cmd("up")({}, { stdio: { input: [], write: () => {}, log } });
+    expect(log.mock.calls[0]![0]).toContain("minutes");
+  });
+
+  it("a failing ps stops up instead of counting zero", async () => {
+    await cmd("up")({});
+    psFails = true;
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("docker compose ps failed");
+  });
+
+  it("a corrupt state.json stops up, status, down and reset-less commands", async () => {
+    await cmd("up")({});
+    writeFileSync(join(dir(), "state.json"), "{not json");
+    for (const name of ["up", "status", "down"]) {
+      const e = await fails(() => cmd(name)({}));
+      expect(e.message, name).toContain("state.json is unreadable");
+      expect(e.message, name).toContain("barako reset");
+    }
+  });
+
+  it("reset repairs a corrupt state.json", async () => {
+    await cmd("up")({});
+    writeFileSync(join(dir(), "state.json"), "{}");
+    const out = await cmd("reset")({ yes: true });
+    expect(out.reset).toBe(true);
+    expect(existsSync(join(dir(), "state.json"))).toBe(false);
+  });
+
+  it("a running stack with newer embedded files gets a notice", async () => {
+    await cmd("up")({});
+    writeFileSync(join(dir(), "Caddyfile"), "old\n");
+    running = 5;
+    const out = await cmd("up")({});
+    expect(out.alreadyRunning).toBe(true);
+    expect(out.notice).toContain("barako down");
+  });
+});
+
+describe("the port at the CLI", () => {
+  it.each(["0x1F90", "1e4", " 8080", "8080.0", "5005", "80"])("run up --port %s is a usage error", async (v) => {
+    const out: string[] = [];
+    const code = await run(["up", "--port", v], {}, { readFile: () => "", write: (_s, t) => void out.push(t) });
+    expect(code).toBe(1);
+    expect(out.join("")).toContain("--port");
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("reset through main", () => {
+  let oldHome: string | undefined;
+  beforeEach(() => {
+    oldHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+  afterEach(() => {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+  });
+
+  async function setUp() {
+    await cmd("up")({});
+    spawnMock.mockImplementation(() => fakeChild(0));
+  }
+
+  it("a TTY and an answer of no does not confirm", async () => {
+    await setUp();
+    const out: string[] = [];
+    const code = await run(
+      ["reset"],
+      {},
+      { readFile: () => "", write: (_s, t) => void out.push(t), isTTY: true, ask: async () => "no" },
+    );
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("not confirmed");
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("a TTY and an answer of yes goes on", async () => {
+    await setUp();
+    const out: string[] = [];
+    const code = await run(
+      ["reset"],
+      {},
+      { readFile: () => "", write: (_s, t) => void out.push(t), isTTY: true, ask: async () => "yes" },
+    );
+    expect(code).toBe(0);
+    expect(out.join("")).toContain('"reset":true');
+    expect(spawnMock.mock.calls[0]![1]).toContain("--volumes");
   });
 });
