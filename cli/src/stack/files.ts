@@ -80,9 +80,10 @@ services:
       PRESS_CONSOLE_ORIGINS: "http://admin.localhost:\${PORT}"
       # CMS_URL is a name only the containers resolve, so the page policy names the hosts a browser loads media from.
       PRESS_MEDIA_ORIGINS: "http://admin.localhost:\${PORT} http://api.localhost:\${PORT}"
-    # The image's own check fetches the home page. The site starts before up creates the tenant, so
-    # that first render is a not-found, and Next serves it from cache to every visitor after. The
-    # proxy never rewrites /api, so this path renders nothing from the CMS.
+    # Press 0.19.1 and newer check this path themselves. An older image, kept by a stack still running
+    # from an earlier release, checks the home page, and the site starts before up creates the tenant,
+    # so that first render is a not-found that Next serves from cache after. The proxy never rewrites
+    # /api, so this path renders nothing from the CMS.
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
@@ -197,8 +198,8 @@ export const VERSIONS_JSON = `{
   },
   "press": {
     "image": "ghcr.io/baryodev/barako-press",
-    "tag": "0.19.0",
-    "digest": "sha256:94ecaa315251ccab06ecbc1aaa7be2b257ce06a8c334d65c82ef756b7737eff8"
+    "tag": "0.19.2",
+    "digest": "sha256:485fa110ec9863959dbde45a87564059d208caa5f0c591bed457cfb318be3ea1"
   },
   "brew": {
     "image": "ghcr.io/baryodev/barako-brew",
