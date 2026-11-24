@@ -304,9 +304,14 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     // Press 0.19.0 sends a page CSP, and every policy that names image sources must let the image's
     // origin load. At least one must name them, so a Press that stops sending its policy fails here.
     // A header can hold several policies separated by commas, and the browser enforces each one.
-    // Meta attributes may use either quote style, or none.
+    // Meta attributes may use either quote style, or none, and hold character references (React writes
+    // 'self' as &#x27;self&#x27;), so decode them as a browser does before splitting on ";".
+    const decode = (s: string) =>
+      s.replace(/&(?:#x([0-9a-f]+)|#(\d+)|(quot|apos|amp|lt|gt));/gi, (_, hex, dec, name) =>
+        hex ? String.fromCodePoint(parseInt(hex, 16)) : dec ? String.fromCodePoint(Number(dec)) : ({ quot: '"', apos: "'", amp: "&", lt: "<", gt: ">" } as Record<string, string>)[name.toLowerCase()]!,
+      );
     const attrs = (tag: string) =>
-      new Map([...tag.matchAll(/\s([a-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi)].map((a) => [a[1]!.toLowerCase(), a[2] ?? a[3] ?? a[4] ?? ""] as const));
+      new Map([...tag.matchAll(/\s([a-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi)].map((a) => [a[1]!.toLowerCase(), decode(a[2] ?? a[3] ?? a[4] ?? "")] as const));
     const doc = await headers("client.localhost", `/blog/${slug}`);
     const policies = [
       ...doc.head.split("\n").filter((l) => /^content-security-policy:/i.test(l.trim())).flatMap((l) => l.slice(l.indexOf(":") + 1).split(",")),

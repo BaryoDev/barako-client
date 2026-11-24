@@ -330,6 +330,15 @@ describe("files", () => {
     expect(COMPOSE_YML).not.toContain("SITE_URL");
   });
 
+  it("the site healthcheck asks for a path that renders no page", () => {
+    // A check that renders the home page before the tenant exists caches a 404 for every visitor.
+    const site = COMPOSE_YML.slice(COMPOSE_YML.indexOf("\n  site:"), COMPOSE_YML.indexOf("\n  console:"));
+    const test = /healthcheck:\s+test: (\[.*\])/.exec(site)?.[1];
+    expect(test, "the site service sets its own healthcheck").toBeDefined();
+    const urls = [...test!.matchAll(/https?:\/\/[^'"\s)]+/g)].map((m) => new URL(m[0]).pathname);
+    expect(urls).toEqual(["/api/health"]);
+  });
+
   it("versions.json pins core 5.9.0 and gives each image a tag and digest", () => {
     const v = JSON.parse(VERSIONS_JSON);
     expect(v.core.tag).toBe("5.9.0");

@@ -80,6 +80,15 @@ services:
       PRESS_CONSOLE_ORIGINS: "http://admin.localhost:\${PORT}"
       # CMS_URL is a name only the containers resolve, so the page policy names the hosts a browser loads media from.
       PRESS_MEDIA_ORIGINS: "http://admin.localhost:\${PORT} http://api.localhost:\${PORT}"
+    # The image's own check fetches the home page. The site starts before up creates the tenant, so
+    # that first render is a not-found, and Next serves it from cache to every visitor after. The
+    # proxy never rewrites /api, so this path renders nothing from the CMS.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
     networks: [edge]
 
   console:
