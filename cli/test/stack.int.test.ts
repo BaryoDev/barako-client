@@ -301,8 +301,8 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     expect(img.type).toMatch(/^image\//);
     expect(img.size).toBeGreaterThan(0);
 
-    // A page CSP, if there is one, must let the image's origin load. None is required: Press 0.18.1
-    // sets none under barako up. A Press with a per-page CSP fails here until it allows this host.
+    // Press 0.19.0 sends a page CSP, and every policy that names image sources must let the image's
+    // origin load. At least one must name them, so a Press that stops sending its policy fails here.
     // A header can hold several policies separated by commas, and the browser enforces each one.
     // Meta attributes may use either quote style, or none.
     const attrs = (tag: string) =>
@@ -315,11 +315,15 @@ describe.skipIf(!ON)("barako up against the published images", () => {
         .filter((a) => a.get("http-equiv")?.toLowerCase() === "content-security-policy")
         .map((a) => a.get("content") ?? ""),
     ];
+    let imagePolicies = 0;
     for (const policy of policies) {
       const directives = new Map(policy.split(";").map((d) => d.trim().split(/\s+/)).filter((d) => d[0]).map((d) => [d[0]!.toLowerCase(), d.slice(1)] as const));
       const sources = directives.get("img-src") ?? directives.get("default-src");
-      if (sources) expect(allowsOrigin(sources, linkOrigin), `CSP image sources: ${sources.join(" ")}`).toBe(true);
+      if (!sources) continue;
+      imagePolicies++;
+      expect(allowsOrigin(sources, linkOrigin), `CSP image sources: ${sources.join(" ")}`).toBe(true);
     }
+    expect(imagePolicies, `policies: ${policies.join(" | ")}`).toBeGreaterThan(0);
   }, 120_000);
 
   it("reset removes the volumes", async () => {

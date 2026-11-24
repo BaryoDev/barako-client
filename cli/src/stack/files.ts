@@ -78,6 +78,8 @@ services:
       CMS_TENANT: ${TENANT}
       PRESS_SECRET: \${PRESS_SECRET:?missing from .env}
       PRESS_CONSOLE_ORIGINS: "http://admin.localhost:\${PORT}"
+      # CMS_URL is a name only the containers resolve, so the page policy names the hosts a browser loads media from.
+      PRESS_MEDIA_ORIGINS: "http://admin.localhost:\${PORT} http://api.localhost:\${PORT}"
     networks: [edge]
 
   console:
@@ -186,8 +188,8 @@ export const VERSIONS_JSON = `{
   },
   "press": {
     "image": "ghcr.io/baryodev/barako-press",
-    "tag": "0.18.1",
-    "digest": "sha256:bd40afe6ace3ffd21908a73914c0a0e58eaa3d18f05fc35e41222e2e86ad23cb"
+    "tag": "0.19.0",
+    "digest": "sha256:94ecaa315251ccab06ecbc1aaa7be2b257ce06a8c334d65c82ef756b7737eff8"
   },
   "brew": {
     "image": "ghcr.io/baryodev/barako-brew",
