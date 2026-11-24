@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -217,6 +217,33 @@ describe.skipIf(!BASE)("barako against a live server", () => {
     const run = await barako(["content", "erase", id, "--confirm", id]);
     expect(run.code).toBe(5);
     expect(run.json.error.code).toBe("forbidden");
+  });
+
+  it("barako mcp lists content types over stdio and prints only protocol on stdout", async () => {
+    const lines = [
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "list_content_types", arguments: {} } },
+    ];
+    const child = spawn(process.execPath, [MAIN, "mcp"], {
+      env: { PATH: process.env.PATH, BARAKO_URL: BASE, BARAKO_API_KEY: apiKey },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (d) => (stdout += d));
+    child.stderr.setEncoding("utf8").on("data", (d) => (stderr += d));
+    const closed = new Promise((resolve) => child.on("close", resolve));
+    child.stdin.end(lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    await closed;
+    const replies = stdout.trim().split("\n").map((l) => JSON.parse(l));
+    expect(replies.map((r) => r.id)).toEqual([1, 2]);
+    const result = replies[1].result;
+    expect(result.isError).toBe(false);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.untrusted).toBe(true);
+    expect(body.data).toContain("post");
+    expect(stdout).not.toContain(apiKey);
+    expect(stderr).not.toContain(apiKey);
   });
 
   it("no run printed the key", () => {

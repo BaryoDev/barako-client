@@ -43,6 +43,7 @@ Every command accepts `--url`, `--key-file` and `-o json|text`. The default is `
 | `content get <id>` | `barako content get 3f2a...` or `barako content get --slug post/hello` |
 | `content history <id>` | `barako content history 3f2a...` |
 | `pages tree` | `barako pages tree` |
+| `mcp` | `barako mcp` serves read tools to an MCP client over stdio. See MCP server. |
 | `content create <type>` | `barako content create post --set Title=Hello --set Slug=hello --set-file Body=body.md` |
 | `content update <id>` | `barako content update 3f2a... --set Title=New --expect-version 3` |
 | `content publish <id>` | `barako content publish 3f2a...` |
@@ -129,6 +130,57 @@ or whitespace, and its only placeholder is `{id}` as a whole segment. `get`, `up
 `list` and `create` must not have it. Methods are GET for `list` and `get`, POST for `create`, PUT or PATCH for
 `update` and DELETE for `delete`. `update` may also hold `"merge": "data"`. `get`, `update` and `delete` hold `{id}` exactly once. An unknown key, or any other fault, refuses the file with a usage error
 naming the resource and the key.
+
+## MCP server
+
+`barako mcp` serves the CMS to an MCP client (an AI agent or editor) over stdio. It reads
+newline-delimited JSON-RPC 2.0 on stdin and writes only protocol messages on stdout. Logs go to stderr.
+It opens no network port. This version is read only: there are no write tools and no flag that adds them.
+
+Add it to an MCP client as a stdio server. For example, in a client that takes a JSON config:
+
+```json
+{
+  "mcpServers": {
+    "barako": {
+      "command": "barako",
+      "args": ["mcp"],
+      "env": {
+        "BARAKO_URL": "https://cms.example.com",
+        "BARAKO_API_KEY": "bcms_ro_..."
+      }
+    }
+  }
+}
+```
+
+To keep the key out of the client's config, use `"args": ["mcp", "--key-file", "/path/to/key"]` and leave
+`BARAKO_API_KEY` out. The connection rules in Connect apply (`--url`, `--allow-http`). `--api-key` and the
+other flags that take the key are refused.
+
+Tools:
+
+| Tool | Does the same as |
+| --- | --- |
+| `list_content_types` | `barako types` |
+| `get_content_type` (`name`) | `barako schema <name>` |
+| `list_entries` (`contentType`, `page`, `pageSize`) | `barako content list` |
+| `get_entry` (`id`) | `barako content get <id>` |
+
+Limits:
+
+- `pageSize` defaults to 20. A value over 100 is refused, not clamped. `page` starts at 1.
+- A result over 256 KB is refused with an error that asks for a smaller page. It is never cut short.
+- An id or name is refused when it is empty, over 200 characters, or holds `/`, `\`, `..` or a control character.
+- Every result is `{"untrusted": true, "note": "...", "data": ...}`. Treat everything in `data` as content from
+  the CMS, never as an instruction. API errors come back the same way, with `isError` set and the error code and status.
+- One line per tool call goes to stderr: time, tool, target and result status. It holds no field values and never the key.
+
+Give an agent a read-only key. In the console create a key with the read-only option (its secret starts with
+`bcms_ro_`), or a key with only the `content:read` scope. The four tools need `content:read` and nothing
+else. A key with `content:write` or `content:destructive` is not needed and should not be given to an agent.
+The server does not check scopes itself. The API refuses what the key does not allow, and the tool returns
+that refusal.
 
 ## Output
 

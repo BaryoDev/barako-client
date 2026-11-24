@@ -13,6 +13,18 @@ export interface RunContext {
   readFile(path: string): string;
   /** The definitions loaded from --resources or BARAKO_RESOURCES, already checked. */
   fileResources?: ResourceDefinition[];
+  /** Standard input and output, for a command that serves a stream. Absent in most tests. */
+  stdio?: Stdio;
+  /** Key values the command must keep out of anything it writes. */
+  secrets?: readonly string[];
+}
+
+export interface Stdio {
+  input: AsyncIterable<string | Uint8Array>;
+  /** Writes raw text to stdout. Only protocol output goes here. */
+  write(text: string): void;
+  /** Writes one line to stderr. */
+  log(line: string): void;
 }
 
 export interface Command {
@@ -23,6 +35,8 @@ export interface Command {
   offline?: boolean;
   /** True when the command reads the resource table, so --resources and BARAKO_RESOURCES apply. */
   usesResources?: boolean;
+  /** True when the command writes its own output, so the CLI prints nothing on success. */
+  silent?: boolean;
   run(ctx: RunContext, args: Record<string, unknown>): Promise<unknown>;
 }
 

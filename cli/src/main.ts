@@ -3,10 +3,11 @@ import type { BarakoClient, ResourceDefinition } from "@baryodev/barako-client";
 import { readFileSync } from "node:fs";
 import { connect, type Env } from "./connect";
 import { CliError, render, scrubText, toCliError, type Outcome } from "./output";
-import { commands, type ArgSpec, type Command } from "./registry";
+import { commands, type ArgSpec, type Command, type Stdio } from "./registry";
 import { loadResourcesFile } from "./resources-file";
 import "./commands/destructive";
 import "./commands/generic";
+import "./commands/mcp";
 import "./commands/read";
 import "./commands/status";
 import "./commands/write";
@@ -14,6 +15,8 @@ import "./commands/write";
 export interface Io {
   readFile(path: string): string;
   write(stream: "stdout" | "stderr", text: string): void;
+  /** Standard input, for `mcp`. */
+  stdin?: AsyncIterable<string | Uint8Array>;
 }
 
 const SECRET_FLAGS = ["--api-key", "--apikey", "--key", "--token", "--secret"];
@@ -201,7 +204,15 @@ export async function run(argv: string[], env: Env, io: Io): Promise<number> {
       secrets.push(conn.secret);
       client = conn.client;
     }
-    const result = await found.command.run({ client, readFile: io.readFile, fileResources }, args);
+    const stdio: Stdio | undefined = io.stdin
+      ? {
+          input: io.stdin,
+          write: (text) => io.write("stdout", text),
+          log: (line) => io.write("stderr", line + "\n"),
+        }
+      : undefined;
+    const result = await found.command.run({ client, readFile: io.readFile, fileResources, stdio, secrets }, args);
+    if (found.command.silent) return 0;
     outcome = { ok: true, result };
   } catch (err) {
     outcome = { ok: false, error: toCliError(err) };
@@ -224,6 +235,7 @@ if (/(^|[\\/])(main\.js|barako)$/.test(entry)) {
     write: (stream, text) => {
       (stream === "stdout" ? process.stdout : process.stderr).write(text);
     },
+    stdin: process.stdin,
   }).then((code) => {
     process.exitCode = code;
   });
