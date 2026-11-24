@@ -45,6 +45,8 @@ let labelled: string;
 let httpCalls: HttpRequest[];
 let api: (req: HttpRequest) => HttpReply;
 let clock: number;
+/** True once compose up ran in this command, so ps shows the stack after it started. */
+let afterUp: boolean;
 /** How many services run after a good compose up. */
 let runningAfterUp: number;
 const SERVICE_NAMES = ["postgres", "api", "site", "console", "caddy"];
@@ -76,11 +78,11 @@ function fakeDeps(): StackDeps {
       if (args[0] === "compose" && args[1] === "version") return ok({ stdout: composeVersion + "\n" });
       if (args.includes("ps") && args.includes("--status")) {
         if (psFails) return ok({ code: 1, stderr: "ps broke" });
-        return ok({ stdout: SERVICE_NAMES.slice(0, running).join("\n") });
+        return ok({ stdout: SERVICE_NAMES.slice(0, afterUp ? runningAfterUp : running).join("\n") });
       }
       if (args.includes("up")) {
         const r = ok(upReply);
-        if (r.code === 0) running = runningAfterUp;
+        afterUp = r.code === 0;
         return r;
       }
       return ok();
@@ -107,8 +109,10 @@ function fakeDeps(): StackDeps {
 
 function cmd(name: string) {
   const c = makeStackCommands(fakeDeps()).find((x) => x.name === name)!;
-  return (args: Record<string, unknown> = {}, ctx: Record<string, unknown> = {}) =>
-    c.run({ client: {} as never, readFile: () => "", ...ctx }, args) as Promise<Record<string, any>>;
+  return (args: Record<string, unknown> = {}, ctx: Record<string, unknown> = {}) => {
+    afterUp = false;
+    return c.run({ client: {} as never, readFile: () => "", ...ctx }, args) as Promise<Record<string, any>>;
+  };
 }
 
 async function fails(fn: () => Promise<unknown>): Promise<{ code: string; message: string }> {
@@ -137,6 +141,7 @@ beforeEach(() => {
   httpCalls = [];
   api = happyApi;
   clock = 0;
+  afterUp = false;
   runningAfterUp = 5;
   spawnMock.mockReset();
 });
@@ -613,6 +618,15 @@ describe(".env", () => {
     for (const k of SECRET_KEYS) expect(text).toContain(`${k}=`);
   });
 
+  it("an existing .env is made 0600 again on a running stack too", async () => {
+    await cmd("up")({});
+    chmodSync(join(dir(), ".env"), 0o644);
+    running = 5;
+    const out = await cmd("up")({});
+    expect(out.alreadyRunning).toBe(true);
+    expect(statSync(join(dir(), ".env")).mode & 0o777).toBe(0o600);
+  });
+
   it("an existing .env is made 0600 again", async () => {
     await cmd("up")({});
     chmodSync(join(dir(), ".env"), 0o644);
@@ -894,13 +908,24 @@ describe("bootstrap", () => {
     expect(existsSync(join(dir(), "api-key"))).toBe(false);
   });
 
-  const ALREADY = JSON.stringify({ errors: { blueprint: ["Blueprint 'blog' was not applied: post already exist(s) in this tenant. Applying is additive and never replaces a type."] } });
-  const onKit = (reply: HttpReply) => (r: HttpRequest): HttpReply => (new URL(r.url).pathname.startsWith("/api/content-types/blueprints/") ? reply : happyApi(r));
+  const already = (name: string) =>
+    JSON.stringify({ errors: { blueprint: [`Blueprint '${name}' was not applied: post already exists in this tenant. Applying is additive and never replaces a type.`] } });
+  const onKit = (reply: HttpReply | ((name: string) => HttpReply)) => (r: HttpRequest): HttpReply => {
+    const m = /^\/api\/content-types\/blueprints\/(.+)$/.exec(new URL(r.url).pathname);
+    return m ? (typeof reply === "function" ? reply(m[1]!) : reply) : happyApi(r);
+  };
 
   it("a kit that already exists in the tenant (409 with core's text) is fine", async () => {
-    api = onKit({ status: 409, body: ALREADY });
+    api = onKit((n) => ({ status: 409, body: already(n) }));
     await cmd("up")({});
     expect(existsSync(join(dir(), "api-key"))).toBe(true);
+  });
+
+  it("a 409 that names another kit is not taken for this kit's", async () => {
+    api = onKit({ status: 409, body: already("other") });
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("conflict");
+    expect(e.message).toContain("'site'");
   });
 
   it("any other 409 on a kit is a conflict, with core's reasons and no raw body", async () => {

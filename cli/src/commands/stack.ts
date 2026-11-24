@@ -442,6 +442,23 @@ function reasons(body: string): string {
   return out.join(" ").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
 }
 
+/** Core's refusal for this kit when its types are already there: "Blueprint 'x' was not applied: a, b already exist in this tenant." */
+function alreadyApplied(body: string, name: string): boolean {
+  const texts: string[] = [];
+  const walk = (v: unknown): void => {
+    if (typeof v === "string") texts.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  try {
+    walk(JSON.parse(body));
+  } catch {
+    texts.push(body);
+  }
+  const head = `Blueprint '${name}' was not applied: `;
+  return texts.some((t) => t.startsWith(head) && /already exists? in this tenant\./.test(t));
+}
+
 const READY_MS = 90_000;
 
 async function waitReady(deps: StackDeps, log: (line: string) => void): Promise<void> {
@@ -529,7 +546,7 @@ async function bootstrap(
     const applied = await call("POST", `/api/content-types/blueprints/${encodeURIComponent(name)}`, { token, tenant: TENANT });
     if (applied.status === 200 || applied.status === 201) continue;
     // Applying is all or nothing. Only core's "already exist" refusal means it was applied before.
-    if (applied.status === 409 && /already exists? in this tenant/.test(applied.body)) continue;
+    if (applied.status === 409 && alreadyApplied(applied.body, name)) continue;
     if (applied.status === 404) {
       throw new CliError("not_found", `The stack does not know a kit called '${name}'. If you passed a file, run barako down and barako up again so the stack can read it.`);
     }
@@ -670,6 +687,8 @@ export function makeStackCommands(deps: StackDeps): Command[] {
         throw new CliError("conflict", `.env is missing a secret. ${BROKEN}`);
       }
 
+      // The guarantee holds on every path, also when the stack is already running.
+      if (existsSync(envPath)) chmodSync(envPath, 0o600);
       const upNow = prior ? await runningServices(deps, dir, prior) : [];
       const running = upNow.length;
       if (prior && running > 0) {
