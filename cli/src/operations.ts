@@ -159,7 +159,7 @@ export function requireRestorable(from: string | undefined): void {
 export function scopeError(err: unknown): CliError {
   const base = toCliError(err);
   if (base.status === 403) {
-    return new CliError("forbidden", "The API key needs the content:destructive scope for this command.", {
+    return new CliError("forbidden", "The API refused this. The key needs the content:destructive scope, and the key's user needs the right to do it.", {
       status: 403,
       details: base.details,
     });

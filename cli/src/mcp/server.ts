@@ -25,7 +25,7 @@ const UNTRUSTED_RULE =
 export function instructionsFor(mode: { writes: boolean; destructive: boolean }): string {
   if (!mode.writes) return `Read only access to a barakoCMS instance. ${UNTRUSTED_RULE}`;
   const destructive = mode.destructive
-    ? " Rollback and erase are on. Plan them with plan_rollback_entry or plan_erase_entry and apply them with apply_destructive_plan. The API refuses them unless the key has the content:destructive scope."
+    ? " Rollback and erase are on. Plan them with plan_rollback_entry or plan_erase_entry and apply them with apply_destructive_plan. The API refuses them unless the key has the content:destructive scope and the key's user has the right to do it."
     : "";
   return (
     `Access to a barakoCMS instance, with writes. ${UNTRUSTED_RULE} ` +
