@@ -411,7 +411,7 @@ describe("mcp write tools: plan and apply", () => {
     expect(dataOf(s.replies[1]!)).toEqual({ id: "a" });
   });
 
-  it("destructive tool needs the destructive scope", async () => {
+  it("a 403 on erase names content:destructive", async () => {
     const { client, contents } = writer({ erase: vi.fn().mockRejectedValue(new BarakoError(403, "Forbidden")) });
     const s = await converse(
       [() => call(1, "plan_erase_entry", { id: "a" }), apply(2, 0, "apply_destructive_plan")],
@@ -650,5 +650,148 @@ describe("mcp write tools: gaps", () => {
     t = START + PLAN_TTL_MS;
     expect(store.size).toBe(0);
     expect(store.take(token)).toBeUndefined();
+  });
+});
+
+describe("mcp write tools: thin answers, limits and token handling", () => {
+  const real = (c: { mock: { calls: any[][] } }) => c.mock.calls.filter((x) => !x.at(-1)?.dryRun);
+
+  it("an empty ETag counts as none: it is not sent and the fingerprint is still compared", async () => {
+    const blank = { ...ENTRY, etag: "", version: 2 };
+    const { client, contents } = writer({ get: vi.fn().mockResolvedValue({ ...blank }) });
+    const s = await converse(
+      [
+        () => call(1, "plan_update_entry", { id: "a", data: { Title: "New" } }),
+        apply(2, 0),
+        () => call(3, "plan_update_entry", { id: "a", data: { Title: "New" } }),
+        () => {
+          contents.get.mockResolvedValue({ ...blank, version: 5 });
+          return call(4, "ping");
+        },
+        apply(5, 2),
+      ],
+      { client },
+    );
+    expect(s.replies[1]!.result.isError).toBe(false);
+    expect(real(contents.update)[0]![2]).toEqual({});
+    expect(contents.update.mock.calls[0]![2]).toEqual({ dryRun: true });
+    expect(s.replies[4]!.result.isError).toBe(true);
+    expect(errorOf(s.replies[4]!).message).toContain("changed since the plan");
+    expect(real(contents.update)).toHaveLength(1);
+  });
+
+  it("an empty ETag with version 0 is refused at plan", async () => {
+    const { client, contents } = writer({ get: vi.fn().mockResolvedValue({ ...ENTRY, etag: "", version: 0 }) });
+    const s = await converse([() => call(1, "plan_update_entry", { id: "a", data: { Title: "New" } })], { client });
+    expect(s.replies[0]!.result.isError).toBe(true);
+    expect(errorOf(s.replies[0]!).code).toBe("version_required");
+    expect(errorOf(s.replies[0]!).message).toBe("The server returned neither a version nor an ETag for this entry, so no plan was made.");
+    expect(contents.update).not.toHaveBeenCalled();
+  });
+
+  it("a numeric status plans a restore from archived", async () => {
+    const { client } = writer({ get: vi.fn().mockResolvedValue({ ...ENTRY, status: 2 }) });
+    const s = await converse([() => call(1, "plan_change_status", { id: "a", action: "restore" })], { client });
+    expect(dataOf(s.replies[0]!).changes).toEqual({ from: "archived", to: "draft" });
+  });
+
+  it("an entry with no status cannot be restored", async () => {
+    const { status: _s, ...noStatus } = ENTRY;
+    const { client } = writer({ get: vi.fn().mockResolvedValue(noStatus) });
+    const s = await converse([() => call(1, "plan_change_status", { id: "a", action: "restore" })], { client });
+    expect(s.replies[0]!.result.isError).toBe(true);
+    expect(errorOf(s.replies[0]!).code).toBe("usage");
+    expect(errorOf(s.replies[0]!).message).toBe("Only an archived entry can be restored.");
+  });
+
+  it("a create answered with nothing still reports it was made", async () => {
+    const { client, contents } = writer({
+      create: vi.fn().mockImplementation(async (_i: unknown, opts?: { dryRun?: boolean }) => (opts?.dryRun ? { dryRun: true, changes: [] } : undefined)),
+    });
+    const s = await converse([() => call(1, "plan_create_entry", { contentType: "post", data: { A: 1 } }), apply(2, 0)], { client });
+    expect(s.replies[1]!.result.isError).toBe(false);
+    expect(dataOf(s.replies[1]!)).toEqual({
+      created: true,
+      note: "The entry was created. The answer had no id. List the entries before you plan another create.",
+    });
+    expect(real(contents.create)).toHaveLength(1);
+  });
+
+  it("an update answered with nothing still reports the id", async () => {
+    const { client } = writer({
+      update: vi.fn().mockImplementation(async (_i: string, _d: unknown, opts?: { dryRun?: boolean }) => (opts?.dryRun ? { dryRun: true, changes: [] } : undefined)),
+    });
+    const s = await converse([() => call(1, "plan_update_entry", { id: "a", data: { Title: "New" } }), apply(2, 0)], { client });
+    expect(s.replies[1]!.result.isError).toBe(false);
+    expect(dataOf(s.replies[1]!)).toEqual({ id: "a" });
+  });
+
+  it("a rollback answered with nothing falls back to the plan's target", async () => {
+    const { client } = writer({ rollback: vi.fn().mockResolvedValue(undefined) });
+    const s = await converse(
+      [() => call(1, "plan_rollback_entry", { id: "a", versionId: "v-9" }), apply(2, 0, "apply_destructive_plan")],
+      { client, destructive: true },
+    );
+    expect(s.replies[1]!.result.isError).toBe(false);
+    expect(dataOf(s.replies[1]!)).toEqual({ id: "a" });
+  });
+
+  it("a create plan over the size cap is refused and nothing is sent", async () => {
+    const { client, contents } = writer();
+    const s = await converse(
+      [() => call(1, "plan_create_entry", { contentType: "post", data: { Body: "x".repeat(RESULT_CAP_BYTES + 10) } }), apply(2, 0)],
+      { client },
+    );
+    expect(s.replies[0]!.result.isError).toBe(true);
+    expect(s.replies[0]!.result.content[0].text).toContain("no plan was made");
+    expect(s.replies[0]!.result.content[0].text).not.toContain("token");
+    expect(contents.create).not.toHaveBeenCalled();
+  });
+
+  it("an update plan whose merged data is over the size cap is refused and nothing is sent", async () => {
+    const { client, contents } = writer();
+    const s = await converse(
+      [() => call(1, "plan_update_entry", { id: "a", data: { Body: "x".repeat(RESULT_CAP_BYTES + 10) } })],
+      { client },
+    );
+    expect(s.replies[0]!.result.isError).toBe(true);
+    expect(s.replies[0]!.result.content[0].text).toContain("no plan was made");
+    expect(contents.update).not.toHaveBeenCalled();
+  });
+
+  it("a wrong action for the apply tool is an argument error and the plan survives", async () => {
+    const { client, contents } = writer();
+    const s = await converse(
+      [
+        () => call(1, "plan_erase_entry", { id: "a" }),
+        apply(2, 0, "apply_plan"),
+        apply(3, 0, "apply_destructive_plan"),
+      ],
+      { client, destructive: true },
+    );
+    expect(s.replies[1]!.result.isError).toBe(true);
+    expect(errorOf(s.replies[1]!).code).toBe("usage");
+    expect(errorOf(s.replies[1]!).message).toBe('"action" must be the action the plan returned.');
+    expect(s.replies[2]!.result.isError).toBe(false);
+    expect(contents.erase.mock.calls).toEqual([["a"]]);
+  });
+
+  it("a live token passed as the target is refused, leaks nowhere and spares the other plan", async () => {
+    const { client, contents } = writer();
+    const s = await converse(
+      [
+        () => call(1, "plan_update_entry", { id: "a", data: { Title: "A" } }),
+        () => call(2, "plan_update_entry", { id: "a", data: { Title: "B" } }),
+        (r) => call(3, "apply_plan", { token: tokenOf(r[0]!), action: "update_entry", target: tokenOf(r[1]!) }),
+        apply(4, 1),
+      ],
+      { client },
+    );
+    expect(s.replies[2]!.result.isError).toBe(true);
+    expect(errorOf(s.replies[2]!).message).toContain("does not match the plan");
+    const tokens = [tokenOf(s.replies[0]!), tokenOf(s.replies[1]!)];
+    for (const line of s.log) for (const t of tokens) expect(line).not.toContain(t);
+    expect(s.replies[3]!.result.isError).toBe(false);
+    expect(real(contents.update)).toHaveLength(1);
   });
 });

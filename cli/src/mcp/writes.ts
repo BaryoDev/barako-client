@@ -15,7 +15,6 @@ import {
 import { CliError } from "../output";
 import {
   DESTRUCTIVE_ACTIONS,
-  PLAN_ACTIONS,
   sameFingerprint,
   TOKEN_PATTERN,
   WRITE_ACTIONS,
@@ -23,6 +22,7 @@ import {
   type Plan,
   type PlanAction,
 } from "./plans";
+import { RESULT_CAP_BYTES } from "./server";
 import { ArgumentError, checkId, shape, TOOLS, type RunContext, type RunResult, type Tool } from "./tools";
 
 const NO_VERSION = "The server returned neither a version nor an ETag for this entry, so no plan was made.";
@@ -32,6 +32,7 @@ const MISMATCH = "The action or target does not match the plan. The plan was rem
 const WRONG_TOOL = "This plan is applied by the other apply tool. The plan was removed. Plan again.";
 const NOTHING = "Nothing to change. Give at least one field in data.";
 const PLAN_TOO_LARGE = "The plan is over 256 KB, so no plan was made. Use the barako CLI.";
+const CREATED_NO_ID = "The entry was created. The answer had no id. List the entries before you plan another create.";
 const APPLIED_TOO_LARGE = "The change was made. The result is over 256 KB, so it is not shown.";
 
 const PLAN_NOTE = "It changes nothing and returns a one-time token for apply.";
@@ -52,6 +53,11 @@ function checkData(value: unknown): Record<string, unknown> {
   return value;
 }
 
+/** A plan keeps its data in memory and shows it back, so it must fit the result cap. */
+function requireFits(data: unknown): void {
+  if (Buffer.byteLength(JSON.stringify(data), "utf8") > RESULT_CAP_BYTES) throw new CliError("usage", PLAN_TOO_LARGE);
+}
+
 function checkBool(value: unknown, label: string): boolean | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") throw new ArgumentError(`"${label}" must be true or false.`);
@@ -61,7 +67,7 @@ function checkBool(value: unknown, label: string): boolean | undefined {
 /** What the entry looked like in this read. The ETag comes from contents.get itself, never from getEntry. */
 function fingerprintOf(entry: unknown): Fingerprint {
   const etag = (entry as { etag?: unknown } | undefined)?.etag;
-  return { version: currentVersionOf(entry), etag: typeof etag === "string" ? etag : undefined, status: statusName(entry) };
+  return { version: currentVersionOf(entry), etag: typeof etag === "string" && etag !== "" ? etag : undefined, status: statusName(entry) };
 }
 
 /** A conflict from the server keeps its code and status, with a fixed message. The server's own text
@@ -130,6 +136,7 @@ const planCreate: Tool = {
   },
   async run(client, a, ctx) {
     const input = { contentType: a.contentType as string, data: a.data as Record<string, unknown>, publish: a.publish === true };
+    requireFits(input.data);
     // No idempotency key on the dry run. The key made here is sent only when the plan is applied.
     const dry = await createEntry(client, input, { dryRun: true });
     return planResult(ctx, { action: "create_entry", target: input.contentType, input, idempotencyKey: randomBytes(16).toString("hex") }, changesOf(dry));
@@ -163,6 +170,7 @@ const planUpdate: Tool = {
       replace: a.replace === true,
       noVersion: NO_VERSION,
     });
+    requireFits(data);
     const fingerprint = fingerprintOf(current);
     const dry = await guarded(() =>
       sendUpdate(client, id, { data, version }, { ...(fingerprint.etag ? { ifMatch: fingerprint.etag } : {}), dryRun: true }),
@@ -286,7 +294,9 @@ async function reread(client: BarakoClient, id: string, planned: Fingerprint) {
 async function execute(client: BarakoClient, plan: Plan): Promise<unknown> {
   switch (plan.action) {
     case "create_entry": {
-      const res = (await createEntry(client, plan.input, { idempotencyKey: plan.idempotencyKey })) as { id: string; version: number };
+      const res = (await createEntry(client, plan.input, { idempotencyKey: plan.idempotencyKey })) as { id?: unknown; version?: unknown } | undefined;
+      // The entry exists by now, so a thin answer must not turn into an error.
+      if (typeof res?.id !== "string") return { created: true, note: CREATED_NO_ID };
       return { id: res.id, version: res.version };
     }
     case "update_entry": {
@@ -295,7 +305,7 @@ async function execute(client: BarakoClient, plan: Plan): Promise<unknown> {
       const res = await guarded(() =>
         sendUpdate(client, plan.target, { data: plan.data, version: plan.version }, etag ? { ifMatch: etag } : {}),
       );
-      return { id: plan.target, version: (res as { version?: number }).version };
+      return { id: plan.target, version: (res as { version?: number } | undefined)?.version };
     }
     case "change_status": {
       await reread(client, plan.target, plan.fingerprint);
@@ -304,9 +314,9 @@ async function execute(client: BarakoClient, plan: Plan): Promise<unknown> {
     }
     case "rollback_entry": {
       await reread(client, plan.target, plan.fingerprint);
-      const res = (await rollbackEntry(client, plan.target, plan.versionId)) as unknown as { id: string; version?: unknown };
+      const res = (await rollbackEntry(client, plan.target, plan.versionId)) as unknown as { id?: string; version?: unknown } | undefined;
       // The server's answer holds the whole entry. Only the id and a version, if it sends one, are kept.
-      return { id: res.id, ...(typeof res.version === "number" ? { version: res.version } : {}) };
+      return { id: res?.id ?? plan.target, ...(typeof res?.version === "number" ? { version: res.version } : {}) };
     }
     case "erase_entry": {
       await reread(client, plan.target, plan.fingerprint);
@@ -337,7 +347,7 @@ function applyTool(name: string, title: string, description: string, destructive
       if (typeof a.token !== "string" || !TOKEN_PATTERN.test(a.token)) {
         throw new ArgumentError('"token" must be the token the plan returned.');
       }
-      if (!(PLAN_ACTIONS as readonly unknown[]).includes(a.action)) throw new ArgumentError('"action" must be the action the plan returned.');
+      if (!(listed as readonly unknown[]).includes(a.action)) throw new ArgumentError('"action" must be the action the plan returned.');
       return { token: a.token, action: a.action, target: checkId(a.target, "target") };
     },
     async run(client, a, ctx) {
@@ -363,7 +373,7 @@ const applyPlan = applyTool(
 const applyDestructive = applyTool(
   "apply_destructive_plan",
   "Apply a destructive plan",
-  "Make the change of a plan from plan_rollback_entry or plan_erase_entry. Needs the plan's token, action and target. The API refuses it unless the key has the content:destructive scope. A token works once and expires after 10 minutes.",
+  "Make the change of a plan from plan_rollback_entry or plan_erase_entry. Needs the plan's token, action and target. The API refuses it unless the key has the content:destructive scope and the key's user has the right to do it. A token works once and expires after 10 minutes.",
   true,
   DESTRUCTIVE_ACTIONS,
 );
