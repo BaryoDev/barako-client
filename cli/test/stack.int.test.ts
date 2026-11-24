@@ -303,13 +303,17 @@ describe.skipIf(!ON)("barako up against the published images", () => {
 
     // A page CSP, if there is one, must let the image's origin load. None is required: Press 0.18.1
     // sets none under barako up. A Press with a per-page CSP fails here until it allows this host.
+    // A header can hold several policies separated by commas, and the browser enforces each one.
+    // Meta attributes may use either quote style, or none.
+    const attrs = (tag: string) =>
+      new Map([...tag.matchAll(/\s([a-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi)].map((a) => [a[1]!.toLowerCase(), a[2] ?? a[3] ?? a[4] ?? ""] as const));
     const doc = await headers("client.localhost", `/blog/${slug}`);
     const policies = [
-      ...doc.head.split("\n").filter((l) => /^content-security-policy:/i.test(l.trim())).map((l) => l.slice(l.indexOf(":") + 1)),
+      ...doc.head.split("\n").filter((l) => /^content-security-policy:/i.test(l.trim())).flatMap((l) => l.slice(l.indexOf(":") + 1).split(",")),
       ...[...page.body.matchAll(/<meta\b[^>]*>/gi)]
-        .map((m) => m[0])
-        .filter((tag) => /\shttp-equiv="content-security-policy"/i.test(tag))
-        .map((tag) => /\scontent="([^"]*)"/i.exec(tag)?.[1] ?? ""),
+        .map((m) => attrs(m[0]))
+        .filter((a) => a.get("http-equiv")?.toLowerCase() === "content-security-policy")
+        .map((a) => a.get("content") ?? ""),
     ];
     for (const policy of policies) {
       const directives = new Map(policy.split(";").map((d) => d.trim().split(/\s+/)).filter((d) => d[0]).map((d) => [d[0]!.toLowerCase(), d.slice(1)] as const));
