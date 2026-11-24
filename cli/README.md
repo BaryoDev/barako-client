@@ -38,7 +38,7 @@ Every command accepts `--url`, `--key-file` and `-o json|text`. The default is `
 | --- | --- |
 | `commands` | `barako commands` returns `{commands, globals}`: every command and its arguments, plus the global options. Needs no connection. |
 | `types` | `barako types` |
-| `schema <type>` | `barako schema post` |
+| `schema <type>` | `barako schema post`. The result is the type's fields and `dataSchema`, a JSON Schema (draft 2020-12) for the data of one of its entries. |
 | `content list <type>` | `barako content list post --status published --limit 10` |
 | `content get <id>` | `barako content get 3f2a...` or `barako content get --slug post/hello` |
 | `content history <id>` | `barako content history 3f2a...` |
@@ -164,9 +164,11 @@ Tools:
 | Tool | Does the same as |
 | --- | --- |
 | `list_content_types` | `barako types` |
-| `get_content_type` (`name`) | `barako schema <name>` |
+| `get_content_type` (`name`) | `barako schema <name>`. The result includes `dataSchema`. |
 | `list_entries` (`contentType`, `page`, `pageSize`) | `barako content list` |
 | `get_entry` (`id`) | `barako content get <id>` |
+
+`dataSchema` is built in the CLI from the type's fields, using what core 5.9.0 accepts for each field type. It describes the data of an entry and does not check it. Names are matched ignoring case by the API, and a rule JSON Schema cannot say is left to the API, so the dry run stays the check. A field type this version does not know gets an open fragment with a note. Choice options, defaults, declared JSON schemas and validation rules in the result come from the CMS, so treat them as data.
 
 Limits:
 
