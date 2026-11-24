@@ -120,6 +120,23 @@ function tinyPng(): Buffer {
   ]);
 }
 
+/**
+ * Whether a CSP source list lets a page load from an http origin. Accepted: `*`, `http:`, the exact
+ * origin, and a `http://*.localhost` host source whose port is the origin's or `*`.
+ */
+function allowsOrigin(sources: string[], origin: string): boolean {
+  const url = new URL(origin);
+  return sources.some((raw) => {
+    const s = raw.toLowerCase();
+    if (s === "*" || s === "http:") return true;
+    const m = /^http:\/\/([^/:]+)(?::(\d+|\*))?\/?$/.exec(s);
+    if (!m) return false;
+    const [, host, port] = m;
+    const hostOk = host === url.hostname || (host!.startsWith("*.") && url.hostname.endsWith(host!.slice(1)) && host === "*.localhost");
+    return hostOk && (port === "*" || port === url.port);
+  });
+}
+
 describe.skipIf(!ON)("barako up against the published images", () => {
   let key = "";
   let failed = false;
@@ -224,10 +241,11 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     expect(page.body).toContain(title);
   }, 180_000);
 
-  // The kit's post type holds its cover as a url field, which core only takes absolute, so the entry
-  // names the file by the address Caddy serves on the site's own origin.
-  it("an uploaded image shows on the Press page from the same origin, under its CSP", async () => {
-    const origin = `http://client.localhost:${PORT}`;
+  // The kit's post type holds its cover as a url field, which core only takes absolute. An editor
+  // gets the link from the console's "Copy link", which builds it from the console's API address
+  // (admin.localhost) when the file has no store URL of its own, so that is the value stored here.
+  it("a Press page shows an image linked the way the console copies it", async () => {
+    const linkOrigin = `http://admin.localhost:${PORT}`;
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(tinyPng())], { type: "image/png" }), "stack-check.png");
     form.append("isPublic", "true");
@@ -236,12 +254,12 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     expect(up.status, mask(upText).slice(0, 300)).toBe(201);
     const fileId = JSON.parse(upText).id as string;
     expect(fileId).toMatch(/^[0-9a-f-]{36}$/);
-    const filePath = `/api/public/files/${fileId}`;
+    const link = `${linkOrigin}/api/public/files/${fileId}`;
 
     const title = `Image check ${randomBytes(4).toString("hex")}`;
     const slug = `image-check-${randomBytes(3).toString("hex")}`;
     const replies = await mcpSession(API, key, ["--allow-writes"], [
-      () => toolCall(1, "plan_create_entry", { contentType: "post", data: { Title: title, Slug: slug, Body: "Has a cover image.", CoverImage: `${origin}${filePath}`, CoverImageAlt: "stack check" }, publish: true }),
+      () => toolCall(1, "plan_create_entry", { contentType: "post", data: { Title: title, Slug: slug, Body: "Has a cover image.", CoverImage: link, CoverImageAlt: "stack check" }, publish: true }),
       applyOf("apply_plan", 2, 0),
     ]);
     expect(replies[0].result.isError, mask(JSON.stringify(replies[0])).slice(0, 300)).toBe(false);
@@ -257,29 +275,26 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     expect(page.status).toBe(200);
     expect(page.body).toContain(title);
 
-    // The image the page draws for this file: relative, or on the page's own origin.
     const srcs = [...page.body.matchAll(/<img\b[^>]*?\ssrc="([^"]*)"/g)].map((m) => m[1]!.replaceAll("&amp;", "&"));
-    const src = srcs.find((s) => s.includes(fileId));
-    expect(src, `img srcs: ${srcs.join(", ")}`).toBeTruthy();
-    const url = new URL(src!, `${origin}/`);
-    expect(url.origin).toBe(origin);
-    expect(url.pathname).toMatch(/^\/api\/public\/files\//);
+    expect(srcs, `img srcs: ${srcs.join(", ")}`).toContain(link);
 
-    // The same host serves it as an image.
-    const img = await headers("client.localhost", url.pathname + url.search);
+    // The console host serves the file through Caddy as an image.
+    const img = await headers("admin.localhost", new URL(link).pathname);
     expect(img.status, img.head).toBe(200);
     expect(img.type).toMatch(/^image\//);
     expect(img.size).toBeGreaterThan(0);
 
-    // The page's CSP, from the header or a meta tag, lets the same origin draw images.
+    // A page CSP, if there is one, must let the image's origin load. None is required: Press 0.18.1
+    // sets none under barako up. A Press with a per-page CSP fails here until it allows this host.
     const doc = await headers("client.localhost", `/blog/${slug}`);
     const policies = [
-      ...doc.head.split("\n").filter((l) => /^content-security-policy(-report-only)?:/i.test(l)).map((l) => l.slice(l.indexOf(":") + 1)),
+      ...doc.head.split("\n").filter((l) => /^content-security-policy:/i.test(l.trim())).map((l) => l.slice(l.indexOf(":") + 1)),
       ...[...page.body.matchAll(/<meta[^>]*http-equiv="content-security-policy"[^>]*content="([^"]*)"/gi)].map((m) => m[1]!),
     ];
     for (const policy of policies) {
-      const imgSrc = policy.split(";").map((d) => d.trim()).find((d) => d.startsWith("img-src"));
-      if (imgSrc) expect(imgSrc, "img-src").toContain("'self'");
+      const directives = new Map(policy.split(";").map((d) => d.trim().split(/\s+/)).filter((d) => d[0]).map((d) => [d[0]!.toLowerCase(), d.slice(1)] as const));
+      const sources = directives.get("img-src") ?? directives.get("default-src");
+      if (sources) expect(allowsOrigin(sources, linkOrigin), `CSP image sources: ${sources.join(" ")}`).toBe(true);
     }
   }, 120_000);
 
