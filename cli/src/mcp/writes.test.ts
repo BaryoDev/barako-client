@@ -686,6 +686,23 @@ describe("mcp write tools: thin answers, limits and token handling", () => {
     expect(real(contents.update)).toHaveLength(1);
   });
 
+  it("an empty ETag at plan and no ETag at apply are the same fingerprint", async () => {
+    const { client, contents } = writer({ get: vi.fn().mockResolvedValue({ ...ENTRY, etag: "", version: 2 }) });
+    const s = await converse(
+      [
+        () => call(1, "plan_update_entry", { id: "a", data: { Title: "New" } }),
+        () => {
+          contents.get.mockResolvedValue({ ...ENTRY, etag: undefined, version: 2 });
+          return call(2, "ping");
+        },
+        apply(3, 0),
+      ],
+      { client },
+    );
+    expect(s.replies[2]!.result.isError).toBe(false);
+    expect(real(contents.update)).toHaveLength(1);
+  });
+
   it("an empty ETag with version 0 is refused at plan", async () => {
     const { client, contents } = writer({ get: vi.fn().mockResolvedValue({ ...ENTRY, etag: "", version: 0 }) });
     const s = await converse([() => call(1, "plan_update_entry", { id: "a", data: { Title: "New" } })], { client });
