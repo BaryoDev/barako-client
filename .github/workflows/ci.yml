@@ -32,6 +32,41 @@ jobs:
       # the MCP pipe test runs against the built CLI.
       - run: npm run test:int
 
+  # The live suite against the pinned core release and against core's master image, so a field
+  # type or route core adds before a release turns this red here first. It runs nightly too, so a
+  # core change shows without a client push. A failed run is the signal; nothing files an issue.
+  live:
+    name: Live suite (core ${{ matrix.core }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        core: ["5.9.0", master]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Start the test stack
+        env:
+          BARAKO_CMS_TAG: ${{ matrix.core }}
+        run: docker compose -f cli/test/compose.yml up -d --wait
+      - name: Live suite
+        env:
+          BARAKO_URL: http://127.0.0.1:5188
+        run: npm run test:int
+      - name: Server log
+        if: failure()
+        run: docker compose -f cli/test/compose.yml logs app --tail 200 | sed -E 's/bcms_[A-Za-z0-9_]+/bcms_***/g'
+      - name: Stop the test stack
+        if: always()
+        run: docker compose -f cli/test/compose.yml down -v
+
   # A tag can be moved after review, a commit SHA cannot. Every action in every workflow is pinned
   # by full SHA with the version in a comment, and this fails the build when one is not.
   pins:
