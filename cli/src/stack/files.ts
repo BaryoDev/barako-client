@@ -85,7 +85,8 @@ services:
     restart: unless-stopped
     depends_on:
       - api
-    read_only: true
+    # Not read_only: the pinned Brew writes the base path, the API address and env-config.js into /app
+    # at start, and exits when it cannot. A Brew image that sets BARAKO_RUNTIME_DIR can run read-only.
     tmpfs:
       - /tmp/barako-app:size=128m
       - /tmp

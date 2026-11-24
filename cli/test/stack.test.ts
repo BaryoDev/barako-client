@@ -50,6 +50,14 @@ let afterUp: boolean;
 /** How many services run after a good compose up. */
 let runningAfterUp: number;
 const SERVICE_NAMES = ["postgres", "api", "site", "console", "caddy"];
+interface FakeBox {
+  service: string;
+  status: string;
+  restarts: number;
+}
+/** The containers docker inspect reports at a time on the fake clock. */
+let boxes: (at: number) => FakeBox[];
+const steady = (): FakeBox[] => SERVICE_NAMES.map((service) => ({ service, status: "running", restarts: 0 }));
 
 const FAKE_KEY = "fake-api-key-for-tests";
 const FAKE_JWT = "fake-jwt-for-tests";
@@ -79,6 +87,12 @@ function fakeDeps(): StackDeps {
       if (args.includes("ps") && args.includes("--status")) {
         if (psFails) return ok({ code: 1, stderr: "ps broke" });
         return ok({ stdout: SERVICE_NAMES.slice(0, afterUp ? runningAfterUp : running).join("\n") });
+      }
+      if (args.includes("ps") && args.includes("--quiet")) return ok({ stdout: boxes(clock).map((b) => `id-${b.service}`).join("\n") });
+      if (args[0] === "inspect") {
+        const byId = new Map(boxes(clock).map((b) => [`id-${b.service}`, b]));
+        const rows = args.filter((a) => byId.has(a)).map((id) => byId.get(id)!);
+        return ok({ stdout: rows.map((b) => `${b.service} ${b.status} ${b.restarts} /barako-${b.service}-1`).join("\n") });
       }
       if (args.includes("up")) {
         const r = ok(upReply);
@@ -143,6 +157,7 @@ beforeEach(() => {
   clock = 0;
   afterUp = false;
   runningAfterUp = 5;
+  boxes = steady;
   spawnMock.mockReset();
 });
 
@@ -1157,6 +1172,76 @@ describe("services after up", () => {
     running = 4;
     const out = await cmd("up")({});
     expect(out.alreadyRunning).toBe(false);
+  });
+});
+
+describe("services staying up", () => {
+  const inspects = () => calls.filter((c) => c.args[0] === "inspect");
+  const flapping = (service: string, every: number) => (at: number) =>
+    steady().map((b) => (b.service === service ? { ...b, status: at % every < 1000 ? "running" : "restarting", restarts: Math.floor(at / every) } : b));
+
+  it("returns once every service has run 10 seconds with no restart", async () => {
+    const out = await cmd("up")({});
+    expect(out.alreadyRunning).toBe(false);
+    expect(clock).toBeGreaterThanOrEqual(10_000);
+    expect(clock).toBeLessThan(12_000);
+  });
+
+  it("asks inspect for the service, state, restart count and name only, never the environment", async () => {
+    await cmd("up")({});
+    expect(inspects().length).toBeGreaterThan(0);
+    for (const c of inspects()) {
+      expect(c.args[1]).toBe("--format");
+      expect(c.args[2]).toBe('{{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} {{.RestartCount}} {{.Name}}');
+    }
+  });
+
+  it("fails up and names a service that keeps restarting", async () => {
+    boxes = flapping("console", 3000);
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("server");
+    expect(e.message).toMatch(/did not stay running after docker compose up: console \((running|restarting), restarted \d+ times\)\./);
+    expect(e.message).toContain("docker logs barako-console-1");
+    for (const other of ["postgres", "api", "site", "caddy"]) expect(e.message).not.toContain(other);
+  });
+
+  it("gives up after 60 seconds on the clock it is given", async () => {
+    boxes = flapping("console", 3000);
+    await fails(() => cmd("up")({}));
+    expect(clock).toBeGreaterThanOrEqual(60_000);
+    expect(clock).toBeLessThan(62_000);
+  });
+
+  it("a service that restarted once and then stays up passes, 10 seconds after its last restart", async () => {
+    boxes = (at) => steady().map((b) => (b.service === "site" && at >= 3000 ? { ...b, restarts: 1 } : b));
+    const out = await cmd("up")({});
+    expect(out.alreadyRunning).toBe(false);
+    expect(clock).toBeGreaterThanOrEqual(13_000);
+  });
+
+  it("a service that is not running when sampled is not steady", async () => {
+    boxes = () => steady().map((b) => (b.service === "caddy" ? { ...b, status: "exited" } : b));
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("caddy (exited, restarted 0 times)");
+  });
+
+  it("the bootstrap time counts toward the 10 seconds", async () => {
+    let tries = 0;
+    api = (req) => (new URL(req.url).pathname === "/health/ready" && ++tries <= 12 ? { status: 503, body: "" } : happyApi(req));
+    await cmd("up")({});
+    // waitReady slept 12 seconds and the stack held still, so up adds no wait of its own.
+    expect(clock).toBe(12_000);
+  });
+
+  it("a second up on a running stack does not wait", async () => {
+    await cmd("up")({});
+    calls = [];
+    running = 5;
+    const before = clock;
+    const out = await cmd("up")({});
+    expect(out.alreadyRunning).toBe(true);
+    expect(inspects()).toEqual([]);
+    expect(clock).toBe(before);
   });
 });
 

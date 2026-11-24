@@ -150,6 +150,8 @@ The port is 8080 unless you pass `--port` (1024 to 65535, not 5005). Everything 
 
 After the stack is healthy, `up` signs in as `admin`, creates the tenant `client`, applies the `site` kit (Press needs it) and then your kit, and makes an API key with `content:read` and `content:write`. The key expires after 365 days. `--kit` takes a name core knows (lower-case letters, digits and hyphens, default `blog`, which adds post, category, author and page) or the path to a blueprint file, which is copied into the stack folder and read by core. A file must be plain JSON with a `name`, and the name cannot be one of core's built-in kits (blog, devsite, docs, email, events, portfolio, site), because core would use the built-in. Start a relative path with `./`. A second `up` does not sign in or make a key again. It checks that the key still works and makes a new one if core refuses it. A different `--kit`, or an edited kit file, applies that kit again, which only adds types. If an `api-key` file is there from an earlier `up`, it is kept, and `up` says so.
 
+When it starts the stack, `up` returns only after every service has run 10 seconds without a restart. A service that keeps restarting fails `up` after a minute, and the error names it and the `docker logs` command that shows why.
+
 Everything lives in `~/.barako/stack`: the compose files, `state.json`, `.env` (the generated passwords, mode 0600, including `ADMIN_PASSWORD`) and `api-key` (the key, mode 0600). `up` never prints the password or the key. It prints the `barako mcp` line to use, which reads the key from its file.
 
 - `barako down` removes the containers and keeps the database, `.env` and the key.

@@ -409,6 +409,75 @@ async function runningServices(deps: StackDeps, dir: string, state: State): Prom
   return r.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
+interface Box {
+  status: string;
+  restarts: number;
+  name: string;
+}
+
+/** Each service's container: its state, how often Docker restarted it, and its name for docker logs. */
+async function containerStates(deps: StackDeps, dir: string, state: State): Promise<Map<string, Box>> {
+  const ps = await compose(deps, dir, state, ["ps", "--all", "--quiet"]);
+  if (ps.code !== 0) throw failure("docker compose ps failed", ps, dir);
+  const ids = ps.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+  const out = new Map<string, Box>();
+  if (ids.length === 0) return out;
+  // Only these fields. The rest of inspect holds the environment, and with it the secrets.
+  const r = await deps.docker(
+    ["inspect", "--format", '{{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} {{.RestartCount}} {{.Name}}', ...ids],
+    {},
+  );
+  if (r.code !== 0) throw failure("docker inspect failed", r, dir);
+  for (const line of r.stdout.split("\n")) {
+    const [service, status, count, name] = line.trim().split(/\s+/);
+    if (!service || !status) continue;
+    out.set(service, { status, restarts: Number(count) || 0, name: (name ?? "").replace(/^\//, "") });
+  }
+  return out;
+}
+
+// Docker resets its restart backoff once a container has run 10 seconds, so up uses the same bar.
+const STEADY_MS = 10_000;
+const SETTLE_MS = 60_000;
+
+/**
+ * Waits until every service has run for STEADY_MS with no restart, measured from `base`. compose --wait
+ * takes "running" as done for a service with no healthcheck, which a container that exits at start
+ * passes between restarts, so up would return with a service down and the site behind it a 502.
+ */
+async function waitSteady(deps: StackDeps, dir: string, state: State, base: { boxes: Map<string, Box>; at: number }): Promise<void> {
+  const deadline = deps.now() + SETTLE_MS;
+  let ref = base;
+  let last: string[] = [];
+  for (;;) {
+    const boxes = await containerStates(deps, dir, state);
+    const at = deps.now();
+    const moved = SERVICE_LIST.filter((n) => {
+      const now = boxes.get(n);
+      const was = ref.boxes.get(n);
+      return now?.status !== "running" || was?.status !== "running" || now.restarts !== was.restarts;
+    });
+    if (moved.length > 0) {
+      ref = { boxes, at };
+      last = moved;
+    } else if (at - ref.at >= STEADY_MS) {
+      return;
+    }
+    if (at >= deadline) {
+      const what = last.map((n) => {
+        const b = boxes.get(n);
+        return b ? `${n} (${b.status}, restarted ${b.restarts} times)` : `${n} (no container)`;
+      });
+      const logs = last.map((n) => `docker logs ${boxes.get(n)?.name || `${PROJECT}-${n}-1`}`).join(", ");
+      throw new CliError(
+        "server",
+        `These services did not stay running after docker compose up: ${what.join(", ")}. See why with ${logs}, then run barako up again.`,
+      );
+    }
+    await deps.sleep(1000);
+  }
+}
+
 function fail(step: string, r: HttpReply): CliError {
   if (r.status === 0) return new CliError("network", `${step}: the API at ${ADMIN_URL} did not answer.`);
   return new CliError("server", `${step} failed (HTTP ${r.status}).`);
@@ -471,7 +540,7 @@ async function waitReady(deps: StackDeps, log: (line: string) => void): Promise<
     if (r.status === 200) return;
     await deps.sleep(1000);
   }
-  throw new CliError("network", "The API did not become ready in 90 seconds. Check docker compose logs for the api service. Run barako up again.");
+  throw new CliError("network", `The API did not become ready in 90 seconds. See why with docker logs ${PROJECT}-api-1, then run barako up again.`);
 }
 
 function api(deps: StackDeps, method: "GET" | "POST", path: string, opts: { token?: string; tenant?: string; json?: unknown } = {}) {
@@ -735,10 +804,15 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       const after = await runningServices(deps, dir, state);
       const missing = SERVICE_LIST.filter((n) => !after.includes(n));
       if (missing.length > 0) {
-        throw new CliError("server", `docker compose up finished but these services are not running: ${missing.join(", ")}. Run docker compose logs for them in ${dir}, then barako up again.`);
+        const logs = missing.map((n) => `docker logs ${PROJECT}-${n}-1`).join(", ");
+        throw new CliError("server", `docker compose up finished but these services are not running: ${missing.join(", ")}. See why with ${logs}, then run barako up again.`);
       }
+      // Sampled before the bootstrap, so the time it takes counts toward the steady window.
+      const base = { boxes: await containerStates(deps, dir, state), at: deps.now() };
       const notice = state.latest ? "Using the newest published images, not the versions pinned in this release." : undefined;
-      return finish(state, { alreadyRunning: false, ...(notice ? { notice } : {}) });
+      const out = await finish(state, { alreadyRunning: false, ...(notice ? { notice } : {}) });
+      await waitSteady(deps, dir, state, base);
+      return out;
     },
   };
 
