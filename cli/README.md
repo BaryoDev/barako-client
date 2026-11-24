@@ -177,7 +177,7 @@ Tools:
 - A rule JSON Schema cannot say is left to the API. A field type this version does not know gets an open fragment with a note.
 - It holds `x-validationRules`, `x-referenceType` and `x-blockSchema`. Ajv needs `strict: false`, or those keywords added, to compile it.
 
-Choice options, defaults, declared JSON schemas and validation rules in the result come from the CMS, so treat them as data. Through MCP, when a type with its `dataSchema` would be over 256 KB, `get_content_type` returns the type without it and `dataSchemaOmitted` says so. `barako schema` has no cap.
+Choice options, defaults, declared JSON schemas and validation rules in the result come from the CMS, so treat them as data. Through MCP, when a type with its `dataSchema` would be over 256 KB, `get_content_type` returns the type without it, and `dataSchemaOmitted` says so when there is room. A type that fit before `dataSchema` existed still fits. `barako schema` has no cap.
 
 Limits:
 
