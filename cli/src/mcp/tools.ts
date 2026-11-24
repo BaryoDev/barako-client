@@ -6,7 +6,7 @@ export const MAX_PAGE_SIZE = 100;
 const MAX_PAGE = 1_000_000;
 const MAX_NAME_LENGTH = 200;
 
-/** Thrown for arguments that do not fit a tool's schema. The server answers it with -32602. */
+/** Thrown for arguments that do not fit a tool's schema. The server answers it with a usage tool error. */
 export class ArgumentError extends Error {}
 
 export interface Tool {
