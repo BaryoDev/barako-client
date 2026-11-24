@@ -153,7 +153,10 @@ describe.skipIf(!BASE)("barako against a live server", () => {
     await waitReady();
     const admin = await login(ADMIN_USER, ADMIN_PASSWORD);
 
-    await call("POST", "/api/content-types/blueprints/blog", {}, admin);
+    // A second run on the same stack finds the blueprint already there.
+    await call("POST", "/api/content-types/blueprints/blog", {}, admin).catch((err: Error) => {
+      if (!err.message.includes(" answered 409:")) throw err;
+    });
 
     const rule = { enabled: true };
     const role = await call(
@@ -352,7 +355,7 @@ describe.skipIf(!BASE)("barako against a live server", () => {
       () => toolCall(1, "plan_erase_entry", { id: mcpId }),
       applyOf("apply_destructive_plan", 2, 0),
     ]);
-    expect(replies[1].result.isError).toBe(false);
+    expect(replies[1].result.isError, JSON.stringify(resultData(replies[1]))).toBe(false);
     expect(resultData(replies[1])).toEqual({ erased: mcpId });
     expect((await barako(["content", "get", mcpId])).code).toBe(4);
   });
