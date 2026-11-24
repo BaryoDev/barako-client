@@ -166,8 +166,9 @@ describe.skipIf(!BASE)("barako against a live server", () => {
         name: `cli-writer-${suffix}`,
         description: "Integration suite writer",
         isPlatform: true,
-        systemCapabilities: ["manage_api_keys"],
-        // Delete on post, so a 403 on erase can only come from the key's scopes.
+        // Erase also needs erase_content on the user. With it and delete on post,
+        // a 403 on erase can only come from the key's scopes.
+        systemCapabilities: ["manage_api_keys", "erase_content"],
         permissions: ["post", "page"].map((slug) => ({
           contentTypeSlug: slug,
           read: rule,
@@ -314,12 +315,10 @@ describe.skipIf(!BASE)("barako against a live server", () => {
   it("mcp: a read-only key cannot create, the API refuses it", async () => {
     const replies = await mcpSession(readKey, ["--allow-writes"], [
       () => toolCall(1, "plan_create_entry", { contentType: "post", data: newPost() }),
-      (r) => (r[0].result.isError ? { jsonrpc: "2.0", id: 2, method: "ping" } : applyOf("apply_plan", 2, 0)(r)),
     ]);
-    // Unconfirmed on the live stack: if the dry run is answered before the scope check, the 403 comes on apply.
-    const refused = replies[0].result.isError ? replies[0] : replies[1];
-    expect(refused.result.isError).toBe(true);
-    expect(resultData(refused).error.status).toBe(403);
+    // The plan's dry run is a write, so the API refuses a read-only key at plan time.
+    expect(replies[0].result.isError).toBe(true);
+    expect(resultData(replies[0]).error.status).toBe(403);
   });
 
   it("mcp: a content:read and content:write key plans and applies a create", async () => {
