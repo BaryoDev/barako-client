@@ -145,7 +145,9 @@ export async function serve(opts: ServeOptions): Promise<void> {
       const out = await tool.run(opts.client, args, ctx);
       const target = out.target ?? ctx.target ?? planned;
       // Scrub the data before it becomes text. After that the key sits inside JSON in JSON.
-      const text = wrap(scrubValue(out.data, opts.secrets));
+      let text = wrap(scrubValue(out.data, opts.secrets));
+      const smaller = Buffer.byteLength(text, "utf8") > RESULT_CAP_BYTES ? tool.smaller?.(out.data) : undefined;
+      if (smaller !== undefined) text = wrap(scrubValue(smaller, opts.secrets));
       if (Buffer.byteLength(text, "utf8") > RESULT_CAP_BYTES) {
         // A plan that is too large to show is not kept, and keeping it would evict another.
         logCall(tool.name, target, "refused:too_large");

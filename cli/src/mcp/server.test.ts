@@ -233,6 +233,31 @@ describe("mcp server", () => {
     }
   });
 
+  it("get_content_type leaves out dataSchema when it would push the result over the cap, and says so", async () => {
+    // One declared schema of 150 KB: the type alone fits, and with its copy in dataSchema it does not.
+    const declared = { description: "x".repeat(150 * 1024) };
+    const type = { name: "post", fields: [{ name: "Body", type: "json", isRequired: false, jsonSchema: declared }] };
+    const { client } = fakeClient({ contentTypes: { readable: vi.fn(), get: vi.fn().mockResolvedValue(type) } });
+    const { replies, log } = await session([call(1, "get_content_type", { name: "post" })], { client });
+    const result = replies[0]!.result;
+    expect(result.isError).toBe(false);
+    expect(Buffer.byteLength(result.content[0].text, "utf8")).toBeLessThanOrEqual(RESULT_CAP_BYTES);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.data).not.toHaveProperty("dataSchema");
+    expect(body.data.dataSchemaOmitted).toContain("barako schema <name>");
+    expect(body.data.fields[0].jsonSchema.description).toHaveLength(150 * 1024);
+    expect(log[0]).toContain("status=ok");
+  });
+
+  it("get_content_type with a small type keeps dataSchema", async () => {
+    const type = { name: "post", fields: [{ name: "Title", type: "string", isRequired: true }] };
+    const { client } = fakeClient({ contentTypes: { readable: vi.fn(), get: vi.fn().mockResolvedValue(type) } });
+    const { replies } = await session([call(1, "get_content_type", { name: "post" })], { client });
+    const body = JSON.parse(replies[0]!.result.content[0].text);
+    expect(body.data.dataSchema.required).toEqual(["Title"]);
+    expect(body.data).not.toHaveProperty("dataSchemaOmitted");
+  });
+
   it("caps an error message over the limit and keeps the code and status", async () => {
     const { client } = fakeClient({
       contents: { get: vi.fn().mockRejectedValue(new BarakoError(500, "m".repeat(600_000))), list: vi.fn() },
