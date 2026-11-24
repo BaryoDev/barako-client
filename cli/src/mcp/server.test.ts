@@ -367,12 +367,15 @@ describe("mcp server safety", () => {
     const big = "x".repeat(LINE_CAP_BYTES + 5);
     const r = await chunked([`${big}\n{"jsonrpc":"2.0","id":1,"method":"ping"}\n`]);
     expect(r.replies.map((x) => x.error?.code ?? x.id)).toEqual([-32700, 1]);
+    // Not "Parse error.": the cap answers before the parser sees the line.
+    expect(r.replies[0]!.error?.message).toBe("Line too long.");
   });
 
   it("skips an over-cap line spread over several chunks and then reads a good line", async () => {
     const part = "y".repeat(LINE_CAP_BYTES / 2 + 10);
     const r = await chunked([part, part, part, '\n{"jsonrpc":"2.0","id":1,"method":"ping"}\n']);
     expect(r.replies.map((x) => x.error?.code ?? x.id)).toEqual([-32700, 1]);
+    expect(r.replies[0]!.error?.message).toBe("Line too long.");
   });
 
   it("ends without throwing when a write fails, and writes no more", async () => {
