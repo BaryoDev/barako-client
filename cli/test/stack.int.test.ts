@@ -154,7 +154,7 @@ describe.skipIf(!ON)("barako up against the published images", () => {
       }
     }
     // Also a key that is in neither file any more, for example one replaced after core refused it.
-    return out.replace(/bcms_[A-Za-z0-9_-]+/g, "bcms_***");
+    return out.replace(/bcms_[A-Za-z0-9_-]+/g, "bcms_***").replace(/eyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*)*/g, "jwt_***");
   };
   afterEach((ctx) => {
     if (ctx.task.result?.state === "fail") failed = true;
@@ -249,7 +249,24 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(tinyPng())], { type: "image/png" }), "stack-check.png");
     form.append("isPublic", "true");
-    const up = await fetch(`${API}/api/files`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form });
+    // The key has no files scope by design, so the upload is made as the console does: signed in as
+    // the admin of the stack's tenant. This is the third sign-in of the file (the first up makes two,
+    // the second up none), under the limit of 5 in 15 minutes. Neither the password nor the token is
+    // ever put in a message.
+    const env = readFileSync(join(stackDir, ".env"), "utf8").split("\n").find((l) => l.startsWith("ADMIN_PASSWORD="));
+    const password = (env ?? "").slice("ADMIN_PASSWORD=".length).trim().replace(/^(["'])(.*)\1$/, "$2");
+    expect(password.length, "ADMIN_PASSWORD in .env").toBeGreaterThan(0);
+    const login = await fetch(`${API}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-tenant": "client" },
+      body: JSON.stringify({ Username: "admin", Password: password }),
+    });
+    const loginText = await login.text();
+    expect(login.status, `sign-in as admin (${mask(loginText).slice(0, 100)})`).toBe(200);
+    const loginBody = JSON.parse(loginText) as Record<string, unknown>;
+    const token = (loginBody.token ?? loginBody.Token) as string;
+    expect(typeof token === "string" && token.length > 0, "sign-in returned a token").toBe(true);
+    const up = await fetch(`${API}/api/files`, { method: "POST", headers: { authorization: `Bearer ${token}`, "x-tenant": "client" }, body: form });
     const upText = await up.text();
     expect(up.status, mask(upText).slice(0, 300)).toBe(201);
     const fileId = JSON.parse(upText).id as string;
