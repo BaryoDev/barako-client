@@ -3,6 +3,9 @@ import type { BarakoClient } from "@baryodev/barako-client";
 import { commands } from "./registry";
 import { serve } from "./mcp/server";
 import "./commands/read";
+import "./commands/write";
+import "./commands/status";
+import "./commands/destructive";
 
 function fake() {
   const parts = {
@@ -74,5 +77,63 @@ describe("the CLI and the MCP tools share their operations", () => {
     expect(a.parts.contents.get.mock.calls).toEqual(b.parts.contents.get.mock.calls);
     expect(cli).not.toHaveProperty("etag");
     expect(mcp).toEqual(cli);
+  });
+});
+
+function writable() {
+  const parts = {
+    contents: {
+      get: vi.fn().mockResolvedValue({ id: "a", status: "Draft", version: 3, data: { Title: "T", Body: "B" }, etag: "W/1" }),
+      update: vi.fn().mockResolvedValue({ id: "a", version: 4 }),
+      setStatus: vi.fn().mockResolvedValue({}),
+      erase: vi.fn().mockResolvedValue(undefined),
+    },
+  };
+  return { parts, client: parts as unknown as BarakoClient };
+}
+
+/** Plan and apply in one session. The apply line needs the token from the plan reply. */
+async function writeViaMcp(client: BarakoClient, planTool: string, planArgs: Record<string, unknown>, applyTool: string) {
+  const out: string[] = [];
+  const call = (id: number, name: string, args: unknown) => JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }) + "\n";
+  async function* input() {
+    yield call(1, planTool, planArgs);
+    const plan = JSON.parse(JSON.parse(out[0]!).result.content[0].text).data;
+    yield call(2, applyTool, { token: plan.token, action: plan.action, target: plan.target });
+  }
+  await serve({ client, input: input(), writeLine: (t) => out.push(t), log: () => {}, secrets: [], allowWrites: true, allowDestructive: true });
+  expect(JSON.parse(out[1]!).result.isError).toBe(false);
+}
+
+describe("the CLI and the MCP write tools send the same write", () => {
+  it("update: same arguments to contents.update", async () => {
+    const a = writable();
+    const b = writable();
+    await viaCli(a.client, "content update", { id: "a", set: ["Title=New"] });
+    await writeViaMcp(b.client, "plan_update_entry", { id: "a", data: { Title: "New" } }, "apply_plan");
+    expect(a.parts.contents.update.mock.calls.at(-1)).toEqual([
+      "a",
+      { data: { Title: "New", Body: "B" }, version: 3 },
+      { ifMatch: "W/1" },
+    ]);
+    expect(b.parts.contents.update.mock.calls.at(-1)).toEqual(a.parts.contents.update.mock.calls.at(-1));
+  });
+
+  it("status change: same arguments to contents.setStatus", async () => {
+    const a = writable();
+    const b = writable();
+    await viaCli(a.client, "content publish", { id: "a" });
+    await writeViaMcp(b.client, "plan_change_status", { id: "a", action: "publish" }, "apply_plan");
+    expect(a.parts.contents.setStatus.mock.calls.at(-1)).toEqual(["a", "Published"]);
+    expect(b.parts.contents.setStatus.mock.calls.at(-1)).toEqual(a.parts.contents.setStatus.mock.calls.at(-1));
+  });
+
+  it("erase: same arguments to contents.erase", async () => {
+    const a = writable();
+    const b = writable();
+    await viaCli(a.client, "content erase", { id: "a", confirm: "a" });
+    await writeViaMcp(b.client, "plan_erase_entry", { id: "a" }, "apply_destructive_plan");
+    expect(a.parts.contents.erase.mock.calls.at(-1)).toEqual(["a"]);
+    expect(b.parts.contents.erase.mock.calls.at(-1)).toEqual(a.parts.contents.erase.mock.calls.at(-1));
   });
 });
