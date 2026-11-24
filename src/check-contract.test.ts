@@ -21,18 +21,18 @@ describe("check-contract", () => {
   it("exits 0 in range and names both surfaces", async () => {
     const r = await run(
       ["https://cms.test/api-root"],
-      answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "10" }),
+      answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "10" }),
     );
     expect(r.code).toBe(0);
     expect(r.out).toHaveLength(1);
-    expect(r.out[0]).toContain("admin 16");
+    expect(r.out[0]).toContain("admin 17");
     expect(r.out[0]).toContain("delivery 10");
-    expect(r.out[0]).toContain("supported 1 to 16");
+    expect(r.out[0]).toContain("supported 1 to 17");
     expect(r.out[0]).toContain("in range");
   });
 
   it("does one GET to /api/meta with no auth", async () => {
-    const r = await run(["https://cms.test/api-root/"], answer({ "X-Api-Contract-Version": "16" }));
+    const r = await run(["https://cms.test/api-root/"], answer({ "X-Api-Contract-Version": "17" }));
     expect(r.calls).toHaveLength(1);
     expect(r.calls[0].url).toBe("https://cms.test/api-root/api/meta");
     expect(r.calls[0].init.method).toBe("GET");
@@ -42,17 +42,17 @@ describe("check-contract", () => {
   it("a newer admin number exits 0 and the line says newer", async () => {
     const r = await run(
       ["https://cms.test"],
-      answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "10" }),
+      answer({ "X-Api-Contract-Version": "18", "X-Delivery-Contract-Version": "10" }),
     );
     expect(r.code).toBe(0);
     expect(r.out[0]).toContain("newer than this client");
-    expect(r.out[0]).toContain("admin 17");
+    expect(r.out[0]).toContain("admin 18");
   });
 
   it("a newer delivery number exits 0 and the line says newer", async () => {
     const r = await run(
       ["https://cms.test"],
-      answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "11" }),
+      answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "11" }),
     );
     expect(r.code).toBe(0);
     expect(r.out[0]).toContain("newer than this client");
@@ -62,7 +62,7 @@ describe("check-contract", () => {
   it("--strict makes a newer API exit 1", async () => {
     const r = await run(
       ["https://cms.test", "--strict"],
-      answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "10" }),
+      answer({ "X-Api-Contract-Version": "18", "X-Delivery-Contract-Version": "10" }),
     );
     expect(r.code).toBe(1);
     expect(r.out[0]).toContain("newer than this client");
@@ -71,7 +71,7 @@ describe("check-contract", () => {
   it("--strict leaves an in-range API at exit 0", async () => {
     const r = await run(
       ["https://cms.test", "--strict"],
-      answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "10" }),
+      answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "10" }),
     );
     expect(r.code).toBe(0);
   });
@@ -97,7 +97,7 @@ describe("check-contract", () => {
   it("older wins over newer in the verdict", async () => {
     const r = await run(
       ["https://cms.test"],
-      answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "0" }),
+      answer({ "X-Api-Contract-Version": "18", "X-Delivery-Contract-Version": "0" }),
     );
     expect(r.code).toBe(1);
     expect(r.out[0]).toContain("older than this client");
@@ -120,7 +120,7 @@ describe("check-contract", () => {
   it("reads the headers whatever the status", async () => {
     const r = await run(
       ["https://cms.test"],
-      answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "10" }, 401),
+      answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "10" }, 401),
     );
     expect(r.code).toBe(0);
   });
@@ -162,13 +162,13 @@ describe("check-contract", () => {
   });
 
   it("a 5xx that carries the header is read as usual", async () => {
-    const r = await run(["https://cms.test"], answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "10" }, 500));
+    const r = await run(["https://cms.test"], answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "10" }, 500));
     expect(r.code).toBe(0);
   });
 
   it("a URL with a user or password is a usage error and nothing is sent or printed back", async () => {
     for (const url of ["https://user:SECRETPW@cms.test", "https://user@cms.test"]) {
-      const r = await run([url], answer({ "X-Api-Contract-Version": "16" }));
+      const r = await run([url], answer({ "X-Api-Contract-Version": "17" }));
       expect(r.code).toBe(2);
       expect(r.calls).toHaveLength(0);
       expect(r.err.join("\n")).not.toContain("SECRETPW");
@@ -185,7 +185,7 @@ describe("check-contract", () => {
   });
 
   it("keeps the path, drops the query and fragment, and adds /api/meta", async () => {
-    const r = await run(["https://cms.test/root/v1/?x=1&y=2#top"], answer({ "X-Api-Contract-Version": "16" }));
+    const r = await run(["https://cms.test/root/v1/?x=1&y=2#top"], answer({ "X-Api-Contract-Version": "17" }));
     expect(r.calls[0].url).toBe("https://cms.test/root/v1/api/meta");
   });
 
@@ -207,10 +207,10 @@ describe("check-contract", () => {
   it("--surface admin ignores the delivery number", async () => {
     const r = await run(
       ["https://cms.test", "--surface=admin"],
-      answer({ "X-Api-Contract-Version": "16", "X-Delivery-Contract-Version": "0" }),
+      answer({ "X-Api-Contract-Version": "17", "X-Delivery-Contract-Version": "0" }),
     );
     expect(r.code).toBe(0);
-    expect(r.out[0]).toContain("admin 16");
+    expect(r.out[0]).toContain("admin 17");
     expect(r.out[0]).not.toContain("delivery");
   });
 

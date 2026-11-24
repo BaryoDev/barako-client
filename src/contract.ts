@@ -2,7 +2,7 @@
  *  here. `admin` is `X-Api-Contract-Version`, `delivery` is `X-Delivery-Contract-Version` (the
  *  routes under `/api/public/`). */
 export const SUPPORTED_CONTRACT = {
-  admin: { min: 1, max: 16 },
+  admin: { min: 1, max: 17 },
   delivery: { min: 1, max: 10 },
 } as const;
 

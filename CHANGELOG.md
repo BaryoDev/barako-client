@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The client accepts admin API contract 17 (barakoCMS 6.0.0, which refuses a name, slug or code that ends with a line feed). It still works against 1 to 16.
 - `barako schema <type>` and the MCP tool `get_content_type` also return `dataSchema`, a JSON Schema (draft 2020-12) for the data of an entry, built from the type's fields. It describes what core 5.9.0 accepts and does not validate: the API still checks every value. It lists only the fields the caller may read and allows other keys. Through MCP it is left out when the result would be over 256 KB. A test fails when core describes a field type the CLI does not map. The integration suite now uses the 5.9.0 image.
 - `barako mcp --allow-writes` adds write tools behind plan and apply (create, update, status change), and `--allow-destructive` adds rollback and erase. A plan returns a one-time token (in memory, 10 minutes). Apply of an update, a status change, a rollback or an erase re-reads the entry first. Apply of a create does not. Default stays read only. Fixes a `__proto__` key being dropped from scrubbed output.
 - New `barako mcp`: an MCP server over stdio with four read tools (content types, one content type, entries, one entry). Read only, no network port, no new dependency. Results are wrapped as untrusted data, capped at 256 KB and 100 entries per page.
@@ -23,7 +24,7 @@
 - `contentTypes.list`, `contents.history` and `me.tenants` stop with an error after 1000 pages. `timeoutMs` applies per page.
 - The `barako` CLI reports a client timeout, abort or network failure as a network error, exit 6.
 - A 2xx answer with a body that is not JSON rejects with a `BarakoError` (`invalid-json`) instead of a `SyntaxError`. A non-JSON error body is cut to 500 characters in `message` and `body`.
-- The client reads `X-Api-Contract-Version` and `X-Delivery-Contract-Version` and warns once per surface when the API is outside the supported range (a delivery header that is present but not a whole number counts as missing, and does not fall back to the admin number) (admin 1 to 16, delivery 1 to 10, exported as `SUPPORTED_CONTRACT`).
+- The client reads `X-Api-Contract-Version` and `X-Delivery-Contract-Version` and warns once per surface when the API is outside the supported range (a delivery header that is present but not a whole number counts as missing, and does not fall back to the admin number) (admin 1 to 17, delivery 1 to 10, exported as `SUPPORTED_CONTRACT`).
 - New command `barako-client check-contract <api url> [--strict]` for CI. Exit 0 in range or newer than the client, 1 older than the client or a missing header (and newer with `--strict`), 2 unreachable, a 5xx with no contract header, or bad arguments (a URL with a user or password included). The URL's path is kept and a query or fragment is dropped.
 - Known limit: a refresh that times out after the server already rotated the token leaves the client holding the old one. The server's replay rule decides what happens next.
 - `me.switch()` sends the tenant as `tenant`, the name barakoCMS reads since 4.6, and still as `club` for older APIs.
