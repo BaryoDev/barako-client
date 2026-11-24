@@ -1,17 +1,8 @@
 import { ContentStatus } from "@baryodev/barako-client";
 import { parseSets } from "../fields";
-import { CliError, toCliError } from "../output";
-import { commands, type Command, type RunContext } from "../registry";
-
-const NAMES = ["draft", "published", "archived", "scheduled"];
-
-/** The server answers with a name such as "Draft". Accept a number too. */
-function statusName(entry: unknown): string | undefined {
-  const s = (entry as { status?: unknown } | undefined)?.status;
-  if (typeof s === "string") return s.toLowerCase();
-  if (typeof s === "number") return NAMES[s];
-  return undefined;
-}
+import { requireRestorable, setStatus, statusName } from "../operations";
+import { CliError } from "../output";
+import { commands, type Command } from "../registry";
 
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 
@@ -31,23 +22,6 @@ const DRY_ARG = {
   type: "boolean",
   description: "Check the change on the client and write nothing.",
 } as const;
-
-async function setStatus(client: RunContext["client"], id: string, to: ContentStatus, toName: string) {
-  try {
-    const res = await client.contents.setStatus(id, to);
-    return { id, status: toName, ...(res?.message === undefined ? {} : { message: res.message }) };
-  } catch (err) {
-    const e = toCliError(err);
-    if (e.status === 400 && /lifecycle|transition/i.test(`${e.message} ${JSON.stringify(e.details ?? "")}`)) {
-      throw new CliError(
-        "validation",
-        `${e.message} If this content type has a lifecycle, use "barako content transition <id> <name>" instead.`,
-        { status: 400, details: e.details },
-      );
-    }
-    throw e;
-  }
-}
 
 function move(name: string, summary: string, to: ContentStatus, toName: string): Command {
   return {
@@ -73,14 +47,7 @@ const restoreCommand: Command = {
     const id = args.id as string;
     const entry = await client.contents.get(id);
     const from = statusName(entry);
-    if (from !== "archived") {
-      throw new CliError(
-        "usage",
-        from === "published"
-          ? "Only an archived entry can be restored. Use unpublish to make a published entry a draft."
-          : "Only an archived entry can be restored.",
-      );
-    }
+    requireRestorable(from);
     if (args["dry-run"] === true) return { dryRun: true, checkedBy: "client", from, to: "draft" };
     return setStatus(client, id, ContentStatus.Draft, "draft");
   },

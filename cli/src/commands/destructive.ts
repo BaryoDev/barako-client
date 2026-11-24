@@ -1,4 +1,5 @@
-import { CliError, toCliError } from "../output";
+import { eraseEntry, rollbackEntry } from "../operations";
+import { CliError } from "../output";
 import { commands, type ArgSpec, type Command } from "../registry";
 
 const CONFIRM: ArgSpec = {
@@ -20,18 +21,6 @@ export function requireConfirm(args: Record<string, unknown>, id: string, noun: 
   }
 }
 
-/** A 403 means the key lacks the destructive scope. Keep the code and status. */
-function scopeError(err: unknown): CliError {
-  const base = toCliError(err);
-  if (base.status === 403) {
-    return new CliError("forbidden", "The API key needs the content:destructive scope for this command.", {
-      status: 403,
-      details: base.details,
-    });
-  }
-  return base;
-}
-
 const rollbackCommand: Command = {
   name: "content rollback",
   summary: "Restore an entry to an earlier version. Needs the content:destructive scope.",
@@ -43,11 +32,7 @@ const rollbackCommand: Command = {
   async run({ client }, args) {
     const id = args.id as string;
     requireConfirm(args, id, "entry");
-    try {
-      return await client.contents.rollback(id, args.versionId as string);
-    } catch (err) {
-      throw scopeError(err);
-    }
+    return rollbackEntry(client, id, args.versionId as string);
   },
 };
 
@@ -63,12 +48,7 @@ const eraseCommand: Command = {
   async run({ client }, args) {
     const id = args.id as string;
     requireConfirm(args, id, ENTRY_NOUN);
-    try {
-      await client.contents.erase(id);
-    } catch (err) {
-      throw scopeError(err);
-    }
-    return { erased: id };
+    return eraseEntry(client, id);
   },
 };
 
