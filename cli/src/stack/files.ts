@@ -146,6 +146,13 @@ http://admin.localhost:8080 {
 			header_up Host api
 		}
 	}
+	# The console's "Copy link" points here. A browser loading the image sends no tenant.
+	handle /api/public/files* {
+		reverse_proxy api:8080 {
+			header_up Host api
+			header_up X-Tenant ${TENANT}
+		}
+	}
 	handle /api/* {
 		reverse_proxy api:8080 {
 			header_up Host api

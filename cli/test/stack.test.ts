@@ -305,6 +305,8 @@ describe("files", () => {
     expect(CADDYFILE).toMatch(/http:\/\/client\.localhost:8080 \{\s+handle \/api\/public\/files\* \{\s+reverse_proxy api:8080 \{\s+header_up Host api\s+header_up X-Tenant client/);
     expect(CADDYFILE).not.toMatch(/handle \/files/);
     expect(CADDYFILE).toMatch(/http:\/\/admin\.localhost:8080 \{\s+handle \/health \{\s+reverse_proxy api:8080/);
+    const admin = CADDYFILE.slice(CADDYFILE.indexOf("http://admin.localhost:8080"), CADDYFILE.indexOf("http://api.localhost:8080"));
+    expect(admin).toMatch(/handle \/api\/public\/files\* \{\s+reverse_proxy api:8080 \{\s+header_up Host api\s+header_up X-Tenant client\s/);
     expect(CADDYFILE).toMatch(/handle \/api\/\* \{\s+reverse_proxy api:8080/);
     expect(CADDYFILE).toContain("reverse_proxy console:3000");
     expect(CADDYFILE).toContain("reverse_proxy site:3000");
@@ -316,7 +318,7 @@ describe("files", () => {
     const blocks = [...CADDYFILE.matchAll(/reverse_proxy api:8080 \{([^}]*)\}/g)];
     const plain = [...CADDYFILE.matchAll(/reverse_proxy api:8080(?! \{)/g)];
     expect(plain).toEqual([]);
-    expect(blocks.length).toBe(4);
+    expect(blocks.length).toBe(5);
     for (const b of blocks) {
       const host = /header_up Host (\S+)/.exec(b[1]!)?.[1];
       expect(allowed).toContain(host);
