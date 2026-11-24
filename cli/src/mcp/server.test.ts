@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { BarakoError, type BarakoClient } from "@baryodev/barako-client";
-import { RESULT_CAP_BYTES, SERVER_VERSION, serve, UNTRUSTED_NOTE } from "./server";
+import { LINE_CAP_BYTES, RESULT_CAP_BYTES, SERVER_VERSION, serve, UNTRUSTED_NOTE } from "./server";
 import { MAX_PAGE_SIZE } from "./tools";
 import { run } from "../main";
 
@@ -27,6 +27,23 @@ async function session(lines: (string | Json)[], opts: { client?: BarakoClient; 
   const log: string[] = [];
   async function* input() {
     for (const l of lines) yield (typeof l === "string" ? l : JSON.stringify(l)) + "\n";
+  }
+  await serve({
+    client: opts.client ?? fakeClient().client,
+    input: input(),
+    writeLine: (t) => out.push(t),
+    log: (l) => log.push(l),
+    secrets: opts.secrets ?? [KEY],
+    now: () => new Date("2026-11-24T10:00:00.000Z"),
+  });
+  return { out, log, replies: out.map((l) => JSON.parse(l) as Json) };
+}
+
+async function chunked(chunks: (string | Uint8Array)[], opts: { client?: BarakoClient; secrets?: string[] } = {}) {
+  const out: string[] = [];
+  const log: string[] = [];
+  async function* input() {
+    for (const c of chunks) yield c;
   }
   await serve({
     client: opts.client ?? fakeClient().client,
@@ -137,36 +154,57 @@ describe("mcp server", () => {
     expect(replies[1]).toEqual({ jsonrpc: "2.0", id: 7, result: {} });
   });
 
-  it("answers bad tool arguments with -32602 and sends no request", async () => {
+  it("answers bad tool arguments with a usage tool error and sends no request", async () => {
     const { client, parts } = fakeClient();
-    const { replies } = await session(
+    const { replies, log } = await session(
       [
         call(1, "get_entry", {}),
         call(2, "get_entry", { id: 5 }),
         call(3, "get_entry", { id: "a", extra: 1 }),
         call(4, "list_entries", { contentType: "post", page: 0 }),
         call(5, "list_entries", { contentType: "post", pageSize: "ten" }),
-        call(6, "no_such_tool", {}),
-        call(7, "get_entry", [1]),
+        call(6, "get_entry", [1]),
       ],
       { client },
     );
-    expect(replies.map((r) => r.error?.code)).toEqual([-32602, -32602, -32602, -32602, -32602, -32602, -32602]);
+    for (const r of replies) {
+      expect(r.error).toBeUndefined();
+      expect(r.result.isError).toBe(true);
+      expect(JSON.parse(r.result.content[0].text).data.error.code).toBe("usage");
+    }
+    expect(log.every((l) => l.endsWith("status=refused:invalid_arguments"))).toBe(true);
     expect(parts.contents.get).not.toHaveBeenCalled();
     expect(parts.contents.list).not.toHaveBeenCalled();
   });
 
-  it("refuses a pageSize over 100 and does not clamp it", async () => {
+  it("keeps -32602 for an unknown tool, a missing name and params that are not an object", async () => {
+    const { replies, log } = await session([
+      call(1, "no_such_tool", {}),
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: {} },
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: "x" },
+      { jsonrpc: "2.0", id: 4, method: "tools/call" },
+    ]);
+    expect(replies.map((r) => r.error?.code)).toEqual([-32602, -32602, -32602, -32602]);
+    expect(log).toEqual([
+      '2026-11-24T10:00:00.000Z tool="unknown" target=- status=refused:unknown_tool',
+      '2026-11-24T10:00:00.000Z tool="-" target=- status=refused:invalid_params',
+      '2026-11-24T10:00:00.000Z tool="-" target=- status=refused:invalid_params',
+      '2026-11-24T10:00:00.000Z tool="-" target=- status=refused:invalid_params',
+    ]);
+  });
+
+  it("refuses a pageSize over 100 as a usage tool error and does not clamp it", async () => {
     const { client, parts } = fakeClient();
     const { replies } = await session([call(1, "list_entries", { contentType: "post", pageSize: MAX_PAGE_SIZE + 1 })], { client });
-    expect(replies[0]!.error.code).toBe(-32602);
+    expect(replies[0]!.result.isError).toBe(true);
+    expect(JSON.parse(replies[0]!.result.content[0].text).data.error.code).toBe("usage");
     expect(parts.contents.list).not.toHaveBeenCalled();
   });
 
-  it("sends page 1 and pageSize 20 when none is given", async () => {
+  it("sends pageSize 20 and no page when none is given", async () => {
     const { client, parts } = fakeClient();
     await session([call(1, "list_entries", { contentType: "post" })], { client });
-    expect(parts.contents.list).toHaveBeenCalledWith({ contentType: "post", page: 1, pageSize: 20 });
+    expect(parts.contents.list).toHaveBeenCalledWith({ contentType: "post", pageSize: 20 });
   });
 
   it("refuses a result over the cap with an error result", async () => {
@@ -175,9 +213,37 @@ describe("mcp server", () => {
     const { replies, log } = await session([call(1, "list_entries", { contentType: "post" })], { client });
     const result = replies[0]!.result;
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("smaller page");
+    expect(result.content[0].text).toContain("smaller pageSize");
     expect(result.content[0].text).not.toContain("xxxxxxxx");
     expect(log[0]).toContain("refused:too_large");
+  });
+
+  it("says get_entry and get_content_type results over the cap need the CLI", async () => {
+    const big = "x".repeat(RESULT_CAP_BYTES + 10);
+    const { client } = fakeClient({
+      contents: { get: vi.fn().mockResolvedValue({ id: "a", data: { Body: big } }), list: vi.fn() },
+      contentTypes: { readable: vi.fn(), get: vi.fn().mockResolvedValue({ name: "post", big }) },
+    });
+    const { replies } = await session([call(1, "get_entry", { id: "a" }), call(2, "get_content_type", { name: "post" })], { client });
+    for (const r of replies) {
+      expect(r.result.isError).toBe(true);
+      expect(r.result.content[0].text).toContain("cannot be read through MCP");
+      expect(r.result.content[0].text).toContain("barako CLI");
+      expect(r.result.content[0].text).not.toContain("pageSize");
+    }
+  });
+
+  it("caps an error message over the limit and keeps the code and status", async () => {
+    const { client } = fakeClient({
+      contents: { get: vi.fn().mockRejectedValue(new BarakoError(500, "m".repeat(600_000))), list: vi.fn() },
+    });
+    const { out, replies } = await session([call(1, "get_entry", { id: "a" })], { client });
+    expect(out[0]!.length).toBeLessThan(RESULT_CAP_BYTES);
+    const body = JSON.parse(replies[0]!.result.content[0].text);
+    expect(replies[0]!.result.isError).toBe(true);
+    expect(body.data.error.code).toBe("server");
+    expect(body.data.error.status).toBe(500);
+    expect(body.data.error.message).toBe("The error message was too long to return.");
   });
 
   it("refuses an id with a slash or dot dots before any request", async () => {
@@ -187,7 +253,11 @@ describe("mcp server", () => {
       [...bad.map((id, i) => call(i, "get_entry", { id })), ...bad.map((name, i) => call(100 + i, "get_content_type", { name }))],
       { client },
     );
-    expect(replies.every((r) => r.error?.code === -32602)).toBe(true);
+    expect(replies).toHaveLength(bad.length * 2);
+    for (const r of replies) {
+      expect(r.result.isError).toBe(true);
+      expect(JSON.parse(r.result.content[0].text).data.error.code).toBe("usage");
+    }
     expect(parts.contents.get).not.toHaveBeenCalled();
     expect(parts.contentTypes.get).not.toHaveBeenCalled();
   });
@@ -203,7 +273,7 @@ describe("mcp server", () => {
     expect(body.data.error.code).toBe("not_found");
     expect(body.data.error.status).toBe(404);
     expect(result.content[0].text).not.toContain("at ");
-    expect(log[0]).toBe("2026-11-24T10:00:00.000Z tool=get_entry target=a status=error:not_found:404");
+    expect(log[0]).toBe('2026-11-24T10:00:00.000Z tool="get_entry" target="a" status=error:not_found:404');
   });
 
   it("logs one line per call with no field values", async () => {
@@ -211,7 +281,7 @@ describe("mcp server", () => {
       contents: { get: vi.fn().mockResolvedValue({ id: "a", data: { Secret: "hunter2" } }), list: vi.fn() },
     });
     const { log } = await session([call(1, "get_entry", { id: "a" })], { client });
-    expect(log).toEqual(["2026-11-24T10:00:00.000Z tool=get_entry target=a status=ok"]);
+    expect(log).toEqual(['2026-11-24T10:00:00.000Z tool="get_entry" target="a" status=ok']);
   });
 
   it("stdout holds only JSON-RPC lines", async () => {
@@ -237,6 +307,113 @@ describe("mcp server", () => {
     }
     await serve({ client: fakeClient().client, input: input(), writeLine: (t) => out.push(t), log: () => {}, secrets: [] });
     expect(out.map((l) => JSON.parse(l).id)).toEqual([1, 2]);
+  });
+});
+
+describe("mcp server safety", () => {
+  it("a name with a space and = gives exactly one status= field in the log line", async () => {
+    const { log } = await session([call(1, "get_content_type", { name: "x status=ok" })]);
+    expect(log).toHaveLength(1);
+    expect(log[0]!.match(/status=/g)).toHaveLength(1);
+    expect(log[0]).toContain('target="x status=ok" status=ok');
+  });
+
+  it("scrubs a key that holds a quote and a backslash from results, stdout and logs", async () => {
+    const odd = 'bcms"x\\y';
+    const { client } = fakeClient({
+      contents: {
+        get: vi.fn().mockResolvedValue({ id: "a", data: { Note: `echo ${odd} end` }, [`k${odd}`]: 1 }),
+        list: vi.fn().mockRejectedValue(new BarakoError(400, `bad ${odd}`)),
+      },
+    });
+    const s = await session([call(1, "get_entry", { id: "a" }), call(2, "list_entries", { contentType: "post" })], { client, secrets: [odd] });
+    expect(s.out.join("\n")).not.toContain(odd);
+    expect(s.out.join("\n")).not.toContain(JSON.stringify(odd).slice(1, -1));
+    for (const r of s.replies) {
+      expect(r.result.content[0].text).not.toContain(odd);
+      expect(JSON.stringify(r)).not.toContain(odd);
+    }
+    expect(JSON.parse(s.replies[0]!.result.content[0].text).data.data.Note).toBe("echo [redacted] end");
+    expect(s.log.join("\n")).not.toContain(odd);
+  });
+
+  it("a key passed as a tool argument appears in no stdout line and no log line", async () => {
+    const s = await session([call(1, "get_entry", { id: KEY }), call(2, "get_content_type", { name: KEY })]);
+    expect(s.out.join("\n")).not.toContain(KEY);
+    expect(s.log.join("\n")).not.toContain(KEY);
+    expect(s.log).toHaveLength(2);
+  });
+
+  it("reads Uint8Array chunks and keeps a multi-byte character split across two chunks", async () => {
+    const line = Buffer.from(JSON.stringify(call(1, "get_entry", { id: "a" })) + "\n");
+    const { client } = fakeClient({
+      contents: { get: vi.fn().mockImplementation(async (id: string) => ({ id, data: { Name: "caf\u00e9 \u{1F600}" } })), list: vi.fn() },
+    });
+    const text = JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "get_entry", arguments: { id: "caf\u00e9" } } }) + "\n";
+    const bytes = Buffer.from(text);
+    const cut = bytes.indexOf(Buffer.from("\u00e9")) + 1; // inside the two byte character
+    const r = await chunked([new Uint8Array(line), new Uint8Array(bytes.subarray(0, cut)), new Uint8Array(bytes.subarray(cut))], { client });
+    expect(r.replies).toHaveLength(2);
+    expect(JSON.parse(r.replies[0]!.result.content[0].text).data.data.Name).toBe("caf\u00e9 \u{1F600}");
+    expect(r.log[1]).toContain('target="caf\u00e9"');
+  });
+
+  it("accepts a line that ends in \\r\\n", async () => {
+    const r = await chunked(['{"jsonrpc":"2.0","id":1,"method":"ping"}\r\n']);
+    expect(r.replies).toEqual([{ jsonrpc: "2.0", id: 1, result: {} }]);
+  });
+
+  it("answers a single over-cap line with -32700 and still answers the ping after it", async () => {
+    const big = "x".repeat(LINE_CAP_BYTES + 5);
+    const r = await chunked([`${big}\n{"jsonrpc":"2.0","id":1,"method":"ping"}\n`]);
+    expect(r.replies.map((x) => x.error?.code ?? x.id)).toEqual([-32700, 1]);
+  });
+
+  it("skips an over-cap line spread over several chunks and then reads a good line", async () => {
+    const part = "y".repeat(LINE_CAP_BYTES / 2 + 10);
+    const r = await chunked([part, part, part, '\n{"jsonrpc":"2.0","id":1,"method":"ping"}\n']);
+    expect(r.replies.map((x) => x.error?.code ?? x.id)).toEqual([-32700, 1]);
+  });
+
+  it("ends without throwing when a write fails, and writes no more", async () => {
+    const writes: string[] = [];
+    async function* input() {
+      yield '{"jsonrpc":"2.0","id":1,"method":"ping"}\n';
+      yield '{"jsonrpc":"2.0","id":2,"method":"ping"}\n';
+    }
+    await expect(
+      serve({
+        client: fakeClient().client,
+        input: input(),
+        writeLine: (t) => {
+          writes.push(t);
+          throw new Error("EPIPE");
+        },
+        log: () => {},
+        secrets: [],
+      }),
+    ).resolves.toBeUndefined();
+    expect(writes).toHaveLength(1);
+  });
+
+  it("ends when the writer reports an error later, even while stdin is idle", async () => {
+    let report: () => void = () => {};
+    const never = new Promise<never>(() => {});
+    const input: AsyncIterable<string> = {
+      [Symbol.asyncIterator]: () => ({ next: () => never, return: async () => ({ done: true, value: undefined }) }),
+    };
+    const done = serve({
+      client: fakeClient().client,
+      input,
+      writeLine: () => {},
+      log: () => {},
+      secrets: [],
+      onWriteError: (cb) => {
+        report = cb;
+      },
+    });
+    report();
+    await expect(done).resolves.toBeUndefined();
   });
 });
 

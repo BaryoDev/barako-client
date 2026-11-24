@@ -232,10 +232,11 @@ describe.skipIf(!BASE)("barako against a live server", () => {
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (d) => (stdout += d));
     child.stderr.setEncoding("utf8").on("data", (d) => (stderr += d));
-    const closed = new Promise((resolve) => child.on("close", resolve));
+    const closed = new Promise<number | null>((resolve) => child.on("close", resolve));
     child.stdin.end(lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
-    await closed;
+    expect(await closed).toBe(0);
     const replies = stdout.trim().split("\n").map((l) => JSON.parse(l));
+    for (const r of replies) expect(r.jsonrpc).toBe("2.0");
     expect(replies.map((r) => r.id)).toEqual([1, 2]);
     const result = replies[1].result;
     expect(result.isError).toBe(false);

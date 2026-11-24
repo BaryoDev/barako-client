@@ -17,6 +17,8 @@ export interface Io {
   write(stream: "stdout" | "stderr", text: string): void;
   /** Standard input, for `mcp`. */
   stdin?: AsyncIterable<string | Uint8Array>;
+  /** Calls back when stdout fails, such as a closed pipe (EPIPE). `mcp` stops serving then. */
+  onStdoutError?(cb: () => void): void;
 }
 
 const SECRET_FLAGS = ["--api-key", "--apikey", "--key", "--token", "--secret"];
@@ -209,6 +211,7 @@ export async function run(argv: string[], env: Env, io: Io): Promise<number> {
           input: io.stdin,
           write: (text) => io.write("stdout", text),
           log: (line) => io.write("stderr", line + "\n"),
+          onWriteError: io.onStdoutError,
         }
       : undefined;
     const result = await found.command.run({ client, readFile: io.readFile, fileResources, stdio, secrets }, args);
@@ -236,6 +239,8 @@ if (/(^|[\\/])(main\.js|barako)$/.test(entry)) {
       (stream === "stdout" ? process.stdout : process.stderr).write(text);
     },
     stdin: process.stdin,
+    // Without a listener an EPIPE is an unhandled error and the process dies with a stack trace.
+    onStdoutError: (cb) => process.stdout.on("error", cb),
   }).then((code) => {
     process.exitCode = code;
   });

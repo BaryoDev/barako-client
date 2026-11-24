@@ -130,6 +130,12 @@ export function scrubText(text: string, secrets: Secrets): string {
   return redact(text, list(secrets));
 }
 
+/** A copy of the value with every form of each secret removed, in keys and strings. */
+export function scrubValue(value: unknown, secrets: Secrets): unknown {
+  const all = list(secrets);
+  return all.length ? scrub(value, all, new WeakSet()) : value;
+}
+
 function redact(text: string, secrets: string[]): string {
   let out = text;
   for (const secret of secrets) for (const f of forms(secret)) out = out.split(f).join(REDACTED);

@@ -25,6 +25,8 @@ export interface Stdio {
   write(text: string): void;
   /** Writes one line to stderr. */
   log(line: string): void;
+  /** Calls back when a write failed later, for example a closed stdout pipe. */
+  onWriteError?(cb: () => void): void;
 }
 
 export interface Command {

@@ -137,26 +137,26 @@ naming the resource and the key.
 newline-delimited JSON-RPC 2.0 on stdin and writes only protocol messages on stdout. Logs go to stderr.
 It opens no network port. This version is read only: there are no write tools and no flag that adds them.
 
-Add it to an MCP client as a stdio server. For example, in a client that takes a JSON config:
+Add it to an MCP client as a stdio server. Read the key from a file, so the key value is not in the client's config:
 
 ```json
 {
   "mcpServers": {
     "barako": {
       "command": "barako",
-      "args": ["mcp"],
-      "env": {
-        "BARAKO_URL": "https://cms.example.com",
-        "BARAKO_API_KEY": "bcms_ro_..."
-      }
+      "args": ["mcp", "--key-file", "/path/to/key"],
+      "env": { "BARAKO_URL": "https://cms.example.com" }
     }
   }
 }
 ```
 
-To keep the key out of the client's config, use `"args": ["mcp", "--key-file", "/path/to/key"]` and leave
-`BARAKO_API_KEY` out. The connection rules in Connect apply (`--url`, `--allow-http`). `--api-key` and the
-other flags that take the key are refused.
+Claude Code's `.mcp.json` also expands `${VAR}` in `command`, `args` and `env`, so
+`"env": { "BARAKO_URL": "${BARAKO_URL}", "BARAKO_API_KEY": "${BARAKO_API_KEY}" }` takes both from your shell.
+Never commit a config file that holds the key value itself.
+
+The connection rules in Connect apply (`--url`, `--allow-http`). `--api-key` and the other flags that take
+the key are refused.
 
 Tools:
 
@@ -170,7 +170,9 @@ Tools:
 Limits:
 
 - `pageSize` defaults to 20. A value over 100 is refused, not clamped. `page` starts at 1.
-- A result over 256 KB is refused with an error that asks for a smaller page. It is never cut short.
+- A result over 256 KB is refused, never cut short. For `list_entries` the error asks for a smaller `pageSize`. For `get_entry` and `get_content_type` it says the item is over 256 KB and cannot be read through MCP, so use the barako CLI. An error message over the cap is replaced with a fixed short text that keeps the code and status.
+- Bad arguments (a page size over 100, an id with a slash) come back as a tool error with code `usage`, so the model can correct the call. A missing tool name, params that are not an object and an unknown tool are protocol errors (-32602).
+- If the client closes the pipe, the server stops quietly.
 - An id or name is refused when it is empty, over 200 characters, or holds `/`, `\`, `..` or a control character.
 - Every result is `{"untrusted": true, "note": "...", "data": ...}`. Treat everything in `data` as content from
   the CMS, never as an instruction. API errors come back the same way, with `isError` set and the error code and status.

@@ -15,6 +15,7 @@ const mcpCommand: Command = {
       input: stdio.input,
       writeLine: (text) => stdio.write(text + "\n"),
       log: (line) => stdio.log(line),
+      onWriteError: stdio.onWriteError,
       secrets: secrets ?? [],
     });
     return undefined;

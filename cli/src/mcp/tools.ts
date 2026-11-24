@@ -1,4 +1,5 @@
-import type { BarakoClient } from "@baryodev/barako-client";
+import type { BarakoClient, ListContentQuery } from "@baryodev/barako-client";
+import { getContentType, getEntry, listContentTypes, listEntries } from "../operations";
 
 export const DEFAULT_PAGE_SIZE = 20;
 export const MAX_PAGE_SIZE = 100;
@@ -14,6 +15,8 @@ export interface Tool {
   description: string;
   inputSchema: Record<string, unknown>;
   annotations: { readOnlyHint: true; destructiveHint: false; openWorldHint: false };
+  /** What to tell the model when the result is over the size cap. A fixed sentence. */
+  tooLarge: string;
   /** The id the call aims at, for the log line. Only called after the arguments passed. */
   target?(args: Record<string, unknown>): string | undefined;
   /** Checks the arguments and returns them. Throws ArgumentError. Sends no request. */
@@ -54,12 +57,6 @@ function shape(raw: unknown, allowed: readonly string[]): Record<string, unknown
   return args as Record<string, unknown>;
 }
 
-function withoutEtag(entry: unknown): unknown {
-  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return entry;
-  const { etag: _etag, ...rest } = entry as Record<string, unknown>;
-  return rest;
-}
-
 /** The fixed tool list. Every string here is written in this file, none comes from the CMS. */
 export const TOOLS: readonly Tool[] = [
   {
@@ -68,8 +65,9 @@ export const TOOLS: readonly Tool[] = [
     description: "List the names of the content types this API key may read. Same as `barako types`.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: READ_ONLY,
+    tooLarge: "This item is over 256 KB and cannot be read through MCP. Use the barako CLI.",
     parse: (raw) => shape(raw, []),
-    run: (client) => client.contentTypes.readable(),
+    run: (client) => listContentTypes(client),
   },
   {
     name: "get_content_type",
@@ -82,12 +80,13 @@ export const TOOLS: readonly Tool[] = [
       additionalProperties: false,
     },
     annotations: READ_ONLY,
+    tooLarge: "This item is over 256 KB and cannot be read through MCP. Use the barako CLI.",
     target: (a) => a.name as string,
     parse(raw) {
       const a = shape(raw, ["name"]);
       return { name: checkId(a.name, "name") };
     },
-    run: (client, a) => client.contentTypes.get(a.name as string),
+    run: (client, a) => getContentType(client, a.name as string),
   },
   {
     name: "list_entries",
@@ -109,17 +108,18 @@ export const TOOLS: readonly Tool[] = [
       additionalProperties: false,
     },
     annotations: READ_ONLY,
+    tooLarge: "The page is over 256 KB, so it was not returned. Ask for a smaller pageSize.",
     target: (a) => a.contentType as string,
     parse(raw) {
       const a = shape(raw, ["contentType", "page", "pageSize"]);
       return {
         contentType: checkId(a.contentType, "contentType"),
-        page: a.page === undefined ? 1 : checkInt(a.page, "page", 1, MAX_PAGE),
+        // Left out unless given, as the CLI does.
+        ...(a.page === undefined ? {} : { page: checkInt(a.page, "page", 1, MAX_PAGE) }),
         pageSize: a.pageSize === undefined ? DEFAULT_PAGE_SIZE : checkInt(a.pageSize, "pageSize", 1, MAX_PAGE_SIZE),
       };
     },
-    run: (client, a) =>
-      client.contents.list({ contentType: a.contentType as string, page: a.page as number, pageSize: a.pageSize as number }),
+    run: (client, a) => listEntries(client, a as unknown as ListContentQuery),
   },
   {
     name: "get_entry",
@@ -132,13 +132,12 @@ export const TOOLS: readonly Tool[] = [
       additionalProperties: false,
     },
     annotations: READ_ONLY,
+    tooLarge: "This item is over 256 KB and cannot be read through MCP. Use the barako CLI.",
     target: (a) => a.id as string,
     parse(raw) {
       const a = shape(raw, ["id"]);
       return { id: checkId(a.id, "id") };
     },
-    async run(client, a) {
-      return withoutEtag(await client.contents.get(a.id as string));
-    },
+    run: (client, a) => getEntry(client, a.id as string),
   },
 ];
