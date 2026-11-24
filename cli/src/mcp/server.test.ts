@@ -311,11 +311,11 @@ describe("mcp server", () => {
 });
 
 describe("mcp server safety", () => {
-  it("a name with a space and = gives exactly one status= field in the log line", async () => {
+  it("a name with a space and = stays inside the quoted target in the log line", async () => {
     const { log } = await session([call(1, "get_content_type", { name: "x status=ok" })]);
     expect(log).toHaveLength(1);
-    expect(log[0]!.match(/status=/g)).toHaveLength(1);
-    expect(log[0]).toContain('target="x status=ok" status=ok');
+    // The whole line, so a forged field outside the quotes cannot pass.
+    expect(log[0]).toMatch(/^\S+ tool="get_content_type" target="x status=ok" status=ok$/);
   });
 
   it("scrubs a key that holds a quote and a backslash from results, stdout and logs", async () => {
