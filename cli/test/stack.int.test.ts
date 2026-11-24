@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { applyOf, mcpSession, resultData, toolCall } from "./mcp-session";
 
 // Starts the real local stack from the published images, so it needs Docker and a network. It is
@@ -54,6 +54,25 @@ async function curl(host: string, path: string): Promise<{ status: number; redir
 
 describe.skipIf(!ON)("barako up against the published images", () => {
   let key = "";
+  let failed = false;
+  // Turns every secret in the stack folder into a mask before it is printed.
+  const mask = (text: string) => {
+    let out = text;
+    for (const f of [".env", "api-key"]) {
+      try {
+        for (const line of readFileSync(join(stackDir, f), "utf8").split("\n")) {
+          const v = line.includes("=") ? line.slice(line.indexOf("=") + 1).trim() : line.trim();
+          if (v.length >= 8) out = out.split(v).join("***");
+        }
+      } catch {
+        // No file yet.
+      }
+    }
+    return out;
+  };
+  afterEach((ctx) => {
+    if (ctx.task.result?.state === "fail") failed = true;
+  });
 
   beforeAll(() => {
     home = mkdtempSync(join(tmpdir(), "barako-stack-int-"));
@@ -61,6 +80,15 @@ describe.skipIf(!ON)("barako up against the published images", () => {
   });
 
   afterAll(async () => {
+    // When a test failed, show what the services said before they are removed. Compose masks the values.
+    if (failed) {
+      for (const args of [["ps", "-a"], ["logs", "--no-color", "--tail", "60", "api", "site", "console", "caddy"]]) {
+        const r = await run("docker", ["compose", "-p", "barako", "-f", join(stackDir, "compose.yml"), "--env-file", join(stackDir, ".env"), ...args], {
+          DOCKER_CONFIG: process.env.DOCKER_CONFIG ?? join(homedir(), ".docker"),
+        }, 60_000);
+        console.log(`docker compose ${args[0]}\n${mask(r.stdout + r.stderr)}`);
+      }
+    }
     // Always remove the containers and the volume, also after a failure.
     await barako(["reset", "--yes"], 180_000);
     rmSync(home, { recursive: true, force: true });
@@ -83,7 +111,9 @@ describe.skipIf(!ON)("barako up against the published images", () => {
   it("a second up changes nothing and keeps the key", async () => {
     const r = await barako(["up", "--port", String(PORT)], 120_000);
     expect(r.code, r.stderr).toBe(0);
-    expect(JSON.parse(r.stdout).result.alreadyRunning).toBe(true);
+    const out = JSON.parse(r.stdout).result;
+    expect(out.alreadyRunning).toBe(true);
+    expect(out.bootstrapped).toBe(false);
     expect(readFileSync(join(stackDir, "api-key"), "utf8").trim()).toBe(key);
   });
 
@@ -91,6 +121,7 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     for (const host of ["admin.localhost", "api.localhost"]) {
       const r = await curl(host, "/health");
       expect(r.status, `${host} /health`).toBe(200);
+      expect(r.body, `${host} /health`).toContain("Healthy");
       expect(r.redirect, `${host} /health`).toBe("");
     }
   });
@@ -98,7 +129,7 @@ describe.skipIf(!ON)("barako up against the published images", () => {
   it("the new key creates and publishes an entry through barako mcp", async () => {
     const title = `Stack check ${randomBytes(4).toString("hex")}`;
     const replies = await mcpSession(API, key, ["--allow-writes"], [
-      () => toolCall(1, "plan_create_entry", { contentType: "site", data: { Name: title, Tagline: "Local stack" }, publish: true }),
+      () => toolCall(1, "plan_create_entry", { contentType: "post", data: { Title: title, Slug: `stack-check-${randomBytes(3).toString("hex")}`, Body: "Made by the stack check." }, publish: true }),
       applyOf("apply_plan", 2, 0),
     ]);
     expect(replies[0].result.isError, JSON.stringify(replies[0]).slice(0, 300)).toBe(false);
