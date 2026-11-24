@@ -1,6 +1,6 @@
-import { ContentStatus } from "@baryodev/barako-client";
 import { mergeData, parseSets, readDataFile } from "../fields";
-import { CliError, codeForStatus, toCliError } from "../output";
+import { createEntry, currentVersionOf, prepareUpdate, sendUpdate, updateFailure } from "../operations";
+import { CliError } from "../output";
 import { commands, type ArgSpec, type Command } from "../registry";
 
 function str(args: Record<string, unknown>, name: string): string | undefined {
@@ -48,39 +48,13 @@ const createCommand: Command = {
   ],
   async run({ client, readFile }, args) {
     const { patch } = patchFrom(args, readFile);
-    const status = args.publish === true ? ContentStatus.Published : ContentStatus.Draft;
     const opts: { dryRun?: boolean; idempotencyKey?: string } = {};
     if (args["dry-run"] === true) opts.dryRun = true;
     const key = str(args, "idempotency-key");
     if (key !== undefined) opts.idempotencyKey = key;
-    return client.contents.create({ contentType: str(args, "type")!, data: patch, status }, opts);
+    return createEntry(client, { contentType: str(args, "type")!, data: patch, publish: args.publish === true }, opts);
   },
 };
-
-export function currentVersionOf(entry: unknown): number | undefined {
-  const v = (entry as { version?: unknown } | undefined)?.version;
-  return typeof v === "number" ? v : undefined;
-}
-
-/** The error for a failed update. A 409, 412 or 428 re-reads the row with `reread` and reports its
- *  current version beside the server's answer. Anything else keeps the usual mapping. */
-export async function updateFailure(err: unknown, reread: () => Promise<unknown>): Promise<CliError> {
-  const status = (err as { status?: unknown } | null)?.status;
-  if (status === 409 || status === 412 || status === 428) {
-    let latest: number | undefined;
-    try {
-      latest = currentVersionOf(await reread());
-    } catch {
-      // Report the conflict without the version.
-    }
-    const base = toCliError(err);
-    return new CliError(codeForStatus(status), base.message, {
-      status,
-      details: { currentVersion: latest, server: base.details },
-    });
-  }
-  return toCliError(err);
-}
 
 const updateCommand: Command = {
   name: "content update",
@@ -101,36 +75,19 @@ const updateCommand: Command = {
     const { patch, any } = patchFrom(args, readFile);
     if (!any) throw new CliError("usage", "Nothing to change. Give --set, --set-file or --file.");
 
-    const current = await client.contents.get(id);
-    const reported = currentVersionOf(current);
-    const hasVersion = reported !== undefined && reported >= 1;
-    // Version 0 is normal for an entry with no event stream. The server treats it as "none sent"
-    // (Update/Endpoint.cs:259) and checks If-Match instead (Update/Endpoint.cs:204-221).
-    if (!hasVersion && !current.etag) {
-      throw new CliError(
-        "version_required",
-        "The server returned neither a version nor an ETag for this entry, so the update was not sent.",
-      );
-    }
-    const version = hasVersion ? reported : 0;
-    const expected = args["expect-version"];
-    if (typeof expected === "number" && expected !== version) {
-      throw new CliError("conflict", `The entry is at version ${version}, not the expected version.`, {
-        details: { currentVersion: version },
-      });
-    }
-
-    const data = replace ? patch : mergeData(current.data ?? {}, patch);
+    const { current, data, version } = await prepareUpdate(client, id, patch, {
+      replace,
+      expectVersion: args["expect-version"],
+      noVersion: "The server returned neither a version nor an ETag for this entry, so the update was not sent.",
+    });
     const opts: { ifMatch?: string; dryRun?: boolean } = {};
     if (current.etag) opts.ifMatch = current.etag;
     if (args["dry-run"] === true) opts.dryRun = true;
-
-    try {
-      return await client.contents.update(id, { data, version }, opts);
-    } catch (err) {
-      throw await updateFailure(err, () => client.contents.get(id));
-    }
+    return sendUpdate(client, id, { data, version }, opts);
   },
 };
+
+// generic.ts imports these from here.
+export { currentVersionOf, updateFailure };
 
 commands.push(createCommand, updateCommand);

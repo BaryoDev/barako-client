@@ -1,6 +1,9 @@
 import type { BarakoClient, ListContentQuery } from "@baryodev/barako-client";
 import { getContentType, getEntry, listContentTypes, listEntries } from "../operations";
+import type { Plan, PlanStore } from "./plans";
 
+/** The largest result a tool returns, and the largest data a plan keeps. */
+export const RESULT_CAP_BYTES = 256 * 1024;
 export const DEFAULT_PAGE_SIZE = 20;
 export const MAX_PAGE_SIZE = 100;
 const MAX_PAGE = 1_000_000;
@@ -14,14 +17,29 @@ export interface Tool {
   title: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  annotations: { readOnlyHint: true; destructiveHint: false; openWorldHint: false };
+  annotations: { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint?: boolean; openWorldHint: false };
   /** What to tell the model when the result is over the size cap. A fixed sentence. */
   tooLarge: string;
   /** The id the call aims at, for the log line. Only called after the arguments passed. */
   target?(args: Record<string, unknown>): string | undefined;
   /** Checks the arguments and returns them. Throws ArgumentError. Sends no request. */
   parse(raw: unknown): Record<string, unknown>;
-  run(client: BarakoClient, args: Record<string, unknown>): Promise<unknown>;
+  run(client: BarakoClient, args: Record<string, unknown>, ctx: RunContext): Promise<RunResult>;
+}
+
+/** What a call can use besides the client. One per call, over the session's plan store. */
+export interface RunContext {
+  plans: PlanStore;
+  /** An apply sets this once it has found its plan, so the log line names the plan's target. */
+  target?: string;
+}
+
+export interface RunResult {
+  data: unknown;
+  /** The id the call acted on, for the log line. Read tools leave it to Tool.target. */
+  target?: string;
+  /** A plan to keep. The server stores it only after the result passed the size cap. */
+  plan?: Plan;
 }
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false } as const;
@@ -40,7 +58,7 @@ export function checkId(value: unknown, label: string): string {
   return value;
 }
 
-function checkInt(value: unknown, label: string, min: number, max: number): number {
+export function checkInt(value: unknown, label: string, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
     throw new ArgumentError(`"${label}" must be a whole number from ${min} to ${max}.`);
   }
@@ -48,7 +66,7 @@ function checkInt(value: unknown, label: string, min: number, max: number): numb
 }
 
 /** The arguments must be an object that holds only the named keys. */
-function shape(raw: unknown, allowed: readonly string[]): Record<string, unknown> {
+export function shape(raw: unknown, allowed: readonly string[]): Record<string, unknown> {
   const args = raw === undefined || raw === null ? {} : raw;
   if (typeof args !== "object" || Array.isArray(args)) throw new ArgumentError("Arguments must be an object.");
   for (const key of Object.keys(args)) {
@@ -67,7 +85,7 @@ export const TOOLS: readonly Tool[] = [
     annotations: READ_ONLY,
     tooLarge: "This item is over 256 KB and cannot be read through MCP. Use the barako CLI.",
     parse: (raw) => shape(raw, []),
-    run: (client) => listContentTypes(client),
+    run: async (client) => ({ data: await listContentTypes(client) }),
   },
   {
     name: "get_content_type",
@@ -86,7 +104,7 @@ export const TOOLS: readonly Tool[] = [
       const a = shape(raw, ["name"]);
       return { name: checkId(a.name, "name") };
     },
-    run: (client, a) => getContentType(client, a.name as string),
+    run: async (client, a) => ({ data: await getContentType(client, a.name as string) }),
   },
   {
     name: "list_entries",
@@ -119,7 +137,7 @@ export const TOOLS: readonly Tool[] = [
         pageSize: a.pageSize === undefined ? DEFAULT_PAGE_SIZE : checkInt(a.pageSize, "pageSize", 1, MAX_PAGE_SIZE),
       };
     },
-    run: (client, a) => listEntries(client, a as unknown as ListContentQuery),
+    run: async (client, a) => ({ data: await listEntries(client, a as unknown as ListContentQuery) }),
   },
   {
     name: "get_entry",
@@ -138,6 +156,6 @@ export const TOOLS: readonly Tool[] = [
       const a = shape(raw, ["id"]);
       return { id: checkId(a.id, "id") };
     },
-    run: (client, a) => getEntry(client, a.id as string),
+    run: async (client, a) => ({ data: await getEntry(client, a.id as string) }),
   },
 ];

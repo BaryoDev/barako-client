@@ -43,7 +43,7 @@ Every command accepts `--url`, `--key-file` and `-o json|text`. The default is `
 | `content get <id>` | `barako content get 3f2a...` or `barako content get --slug post/hello` |
 | `content history <id>` | `barako content history 3f2a...` |
 | `pages tree` | `barako pages tree` |
-| `mcp` | `barako mcp` serves read tools to an MCP client over stdio. See MCP server. |
+| `mcp` | `barako mcp` serves read tools to an MCP client over stdio. `--allow-writes` and `--allow-destructive` add write tools. See MCP server. |
 | `content create <type>` | `barako content create post --set Title=Hello --set Slug=hello --set-file Body=body.md` |
 | `content update <id>` | `barako content update 3f2a... --set Title=New --expect-version 3` |
 | `content publish <id>` | `barako content publish 3f2a...` |
@@ -135,7 +135,7 @@ naming the resource and the key.
 
 `barako mcp` serves the CMS to an MCP client (an AI agent or editor) over stdio. It reads
 newline-delimited JSON-RPC 2.0 on stdin and writes only protocol messages on stdout. Logs go to stderr.
-It opens no network port. This version is read only: there are no write tools and no flag that adds them.
+It opens no network port. It is read only unless you pass `--allow-writes`.
 
 Add it to an MCP client as a stdio server. Read the key from a file, so the key value is not in the client's config:
 
@@ -179,11 +179,36 @@ Limits:
   the CMS, never as an instruction. API errors come back the same way, with `isError` set and the error code and status.
 - One line per tool call goes to stderr: time, tool, target and result status. It holds no field values and never the key.
 
-Give an agent a read-only key. In the console create a key with the read-only option (its secret starts with
-`bcms_ro_`), or a key with only the `content:read` scope. The four tools need `content:read` and nothing
-else. A key with `content:write` or `content:destructive` is not needed and should not be given to an agent.
+In the default mode (no flags), give an agent a read-only key. In the console create a key with the read-only option (its secret starts with
+`bcms_ro_`), or a key with only the `content:read` scope. The four read tools need `content:read` and nothing
+else. In this mode a key with `content:write` or `content:destructive` is not needed and should not be given to an agent.
 The server does not check scopes itself. The API refuses what the key does not allow, and the tool returns
 that refusal.
+
+Write tools, listed only with the flag shown. Each is a plan tool or an apply tool, see Write tools below. The API decides, so a key without the scope is refused.
+
+| Tool | Flag | Key scope the API needs |
+| --- | --- | --- |
+| `plan_create_entry`, `plan_update_entry` | `--allow-writes` | `content:write` (the dry run is a write call) |
+| `plan_change_status` | `--allow-writes` | `content:read` |
+| `apply_plan` | `--allow-writes` | `content:write` |
+| `plan_rollback_entry`, `plan_erase_entry` | `--allow-writes` and `--allow-destructive` | `content:read` |
+| `apply_destructive_plan` | `--allow-writes` and `--allow-destructive` | `content:destructive` |
+
+### Write tools
+
+Two flags add write tools. `--allow-writes` adds `plan_create_entry`, `plan_update_entry`, `plan_change_status` and `apply_plan`. `--allow-destructive` needs `--allow-writes` and adds `plan_rollback_entry`, `plan_erase_entry` and `apply_destructive_plan`. Without a flag, those tools do not exist. These tools are listed here and nowhere else in this section.
+
+Key scopes: `content:read` by default, plus `content:write` for writes. Give `content:destructive` only when you pass `--allow-destructive`. The API checks the scopes. A key without one is refused with a 403. Rollback and erase also need the key's user to have the right to do them, or the API refuses them with a 403 even with `content:destructive`.
+
+Writes take two steps. A plan tool checks the change and sends nothing that stores data. It returns what would change and a token. The apply tool sends the write.
+
+- A token works once, lives in memory only and expires after 10 minutes. At most 20 plans are kept, and the oldest is dropped first. A failed apply spends the token.
+- Apply must name the same action and target as the plan.
+- Apply of an update, a status change, a rollback or an erase reads the entry again and refuses if its version, ETag or status changed since the plan. Plan again. Apply of a create does not read anything first.
+- Only update sends `If-Match`. A status change, a rollback and an erase rely on that re-read, so a change made between the re-read and the write is not caught.
+- A create sends the idempotency key made at plan time. After a network failure on apply, list the entries before you plan a create again, or you may make a second entry.
+- A plan over 256 KB is refused and makes no token. An apply whose result is over 256 KB still makes the change, and says only that the result is too large to show.
 
 ## Output
 

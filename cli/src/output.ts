@@ -154,7 +154,13 @@ function scrub(value: unknown, secrets: string[], seen: WeakSet<object>): unknow
   } else {
     const o: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      o[redact(k, secrets)] = scrub(v, secrets, seen);
+      // defineProperty keeps a key like "__proto__" as plain data.
+      Object.defineProperty(o, redact(k, secrets), {
+        value: scrub(v, secrets, seen),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     }
     out = o;
   }

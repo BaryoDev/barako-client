@@ -22,6 +22,8 @@ interface Run {
 }
 
 let apiKey = "";
+let readKey = "";
+let destructiveKey = "";
 const runs: Run[] = [];
 let tmp = "";
 
@@ -92,9 +94,55 @@ function statusOf(entry: any): string {
   return typeof s === "number" ? ["draft", "published", "archived", "scheduled"][s]! : String(s).toLowerCase();
 }
 
+
+/** Runs `barako mcp` with a key. Each step is sent after the reply to the one before it came back, so an
+ *  apply step can read the token from the plan reply. Returns every reply and what the process wrote. */
+async function mcpSession(key: string, flags: string[], steps: ((replies: any[]) => object)[]) {
+  const child = spawn(process.execPath, [MAIN, "mcp", ...flags], {
+    env: { PATH: process.env.PATH, BARAKO_URL: BASE, BARAKO_API_KEY: key },
+  });
+  let stdout = "";
+  let stderr = "";
+  let pending = "";
+  const replies: any[] = [];
+  child.stdout.setEncoding("utf8").on("data", (d: string) => {
+    stdout += d;
+    pending += d;
+    for (let nl = pending.indexOf("\n"); nl >= 0; nl = pending.indexOf("\n")) {
+      replies.push(JSON.parse(pending.slice(0, nl)));
+      pending = pending.slice(nl + 1);
+    }
+  });
+  child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+  const closed = new Promise<number | null>((resolve) => child.on("close", resolve));
+  for (const [i, step] of steps.entries()) {
+    child.stdin.write(JSON.stringify(step(replies)) + "\n");
+    const deadline = Date.now() + 30_000;
+    while (replies.length <= i) {
+      if (Date.now() > deadline) throw new Error("No reply from barako mcp.");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+  child.stdin.end();
+  expect(await closed).toBe(0);
+  expect(stdout).not.toContain(key);
+  expect(stderr).not.toContain(key);
+  return replies;
+}
+
+const toolCall = (id: number, name: string, args: object) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+const resultData = (reply: any) => JSON.parse(reply.result.content[0].text).data;
+const applyOf = (name: string, id: number, planIndex: number) => (replies: any[]) => {
+  const plan = resultData(replies[planIndex]);
+  return toolCall(id, name, { token: plan.token, action: plan.action, target: plan.target });
+};
+const newPost = () => ({ Title: "From MCP", Slug: `mcp-${randomBytes(4).toString("hex")}`, Body: "# Hello\n" });
+
 describe.skipIf(!BASE)("barako against a live server", () => {
   let id = "";
   let firstVersion = 0;
+  let userToken = "";
+  let mcpId = "";
 
   beforeAll(async () => {
     tmp = mkdtempSync(join(tmpdir(), "barako-int-"));
@@ -105,7 +153,10 @@ describe.skipIf(!BASE)("barako against a live server", () => {
     await waitReady();
     const admin = await login(ADMIN_USER, ADMIN_PASSWORD);
 
-    await call("POST", "/api/content-types/blueprints/blog", {}, admin);
+    // A second run on the same stack finds the blueprint already there.
+    await call("POST", "/api/content-types/blueprints/blog", {}, admin).catch((err: Error) => {
+      if (!err.message.includes(" answered 409:")) throw err;
+    });
 
     const rule = { enabled: true };
     const role = await call(
@@ -115,12 +166,15 @@ describe.skipIf(!BASE)("barako against a live server", () => {
         name: `cli-writer-${suffix}`,
         description: "Integration suite writer",
         isPlatform: true,
-        systemCapabilities: ["manage_api_keys"],
+        // Erase also needs erase_content on the user. With it and delete on post,
+        // a 403 on erase can only come from the key's scopes.
+        systemCapabilities: ["manage_api_keys", "erase_content"],
         permissions: ["post", "page"].map((slug) => ({
           contentTypeSlug: slug,
           read: rule,
           create: rule,
           update: rule,
+          ...(slug === "post" ? { delete: rule } : {}),
         })),
       },
       admin,
@@ -138,7 +192,7 @@ describe.skipIf(!BASE)("barako against a live server", () => {
     await call("POST", `/api/users/${user.id}/roles`, { roleId: role.id }, admin);
 
     // The key acts as whoever creates it, so the new user creates it.
-    const userToken = await login(userName, userPassword);
+    userToken = await login(userName, userPassword);
     const key = await call(
       "POST",
       "/api/api-keys",
@@ -147,6 +201,17 @@ describe.skipIf(!BASE)("barako against a live server", () => {
     );
     apiKey = key.key;
     if (!apiKey) throw new Error("The server returned no key.");
+    // Two more keys from the same user, for the MCP write tests. Only their scopes differ.
+    const read = await call("POST", "/api/api-keys", { name: `cli-int-ro-${suffix}`, scopes: ["content:read"] }, userToken);
+    readKey = read.key;
+    const destructive = await call(
+      "POST",
+      "/api/api-keys",
+      { name: `cli-int-del-${suffix}`, scopes: ["content:read", "content:write", "content:destructive"] },
+      userToken,
+    );
+    destructiveKey = destructive.key;
+    if (!readKey || !destructiveKey) throw new Error("The server returned no key.");
   }, 240_000);
 
   afterAll(() => {
@@ -245,6 +310,53 @@ describe.skipIf(!BASE)("barako against a live server", () => {
     expect(body.data).toContain("post");
     expect(stdout).not.toContain(apiKey);
     expect(stderr).not.toContain(apiKey);
+  });
+
+  it("mcp: a read-only key cannot create, the API refuses it", async () => {
+    const replies = await mcpSession(readKey, ["--allow-writes"], [
+      () => toolCall(1, "plan_create_entry", { contentType: "post", data: newPost() }),
+    ]);
+    // The plan's dry run is a write, so the API refuses a read-only key at plan time.
+    expect(replies[0].result.isError).toBe(true);
+    expect(resultData(replies[0]).error.status).toBe(403);
+  });
+
+  it("mcp: a content:read and content:write key plans and applies a create", async () => {
+    const data = newPost();
+    const replies = await mcpSession(apiKey, ["--allow-writes"], [
+      () => toolCall(1, "plan_create_entry", { contentType: "post", data }),
+      applyOf("apply_plan", 2, 0),
+    ]);
+    expect(replies[0].result.isError).toBe(false);
+    expect(replies[1].result.isError).toBe(false);
+    mcpId = resultData(replies[1]).id;
+    expect(mcpId).toBeTruthy();
+    const got = await barako(["content", "get", mcpId]);
+    expect(got.code).toBe(0);
+    expect(got.json.result.data.Title).toBe("From MCP");
+  });
+
+  it("mcp: erase without content:destructive is refused with 403 naming the scope", async () => {
+    const replies = await mcpSession(apiKey, ["--allow-writes", "--allow-destructive"], [
+      () => toolCall(1, "plan_erase_entry", { id: mcpId }),
+      applyOf("apply_destructive_plan", 2, 0),
+    ]);
+    expect(replies[0].result.isError).toBe(false);
+    expect(replies[1].result.isError).toBe(true);
+    const error = resultData(replies[1]).error;
+    expect(error.status).toBe(403);
+    expect(error.message).toContain("content:destructive");
+    expect((await barako(["content", "get", mcpId])).code).toBe(0);
+  });
+
+  it("mcp: the same erase applies with content:destructive and the entry is gone", async () => {
+    const replies = await mcpSession(destructiveKey, ["--allow-writes", "--allow-destructive"], [
+      () => toolCall(1, "plan_erase_entry", { id: mcpId }),
+      applyOf("apply_destructive_plan", 2, 0),
+    ]);
+    expect(replies[1].result.isError, JSON.stringify(resultData(replies[1]))).toBe(false);
+    expect(resultData(replies[1])).toEqual({ erased: mcpId });
+    expect((await barako(["content", "get", mcpId])).code).toBe(4);
   });
 
   it("no run printed the key", () => {
