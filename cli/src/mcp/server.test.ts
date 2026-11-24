@@ -236,9 +236,17 @@ describe("mcp server", () => {
   it("get_content_type leaves out dataSchema when it would push the result over the cap, and says so", async () => {
     // One declared schema of 150 KB: the type alone fits, and with its copy in dataSchema it does not.
     const declared = { description: "x".repeat(150 * 1024) };
-    const type = { name: "post", fields: [{ name: "Body", type: "json", isRequired: false, jsonSchema: declared }] };
+    // A key with a quote and a backslash, so the scrub of the whole stdout line cannot catch it.
+    const odd = 'bcms"x\\y';
+    const type = {
+      name: "post",
+      fields: [
+        { name: "Body", type: "json", isRequired: false, jsonSchema: declared },
+        { name: "Note", type: "string", isRequired: false, description: `see ${odd}` },
+      ],
+    };
     const { client } = fakeClient({ contentTypes: { readable: vi.fn(), get: vi.fn().mockResolvedValue(type) } });
-    const { replies, log } = await session([call(1, "get_content_type", { name: "post" })], { client });
+    const { out, replies, log } = await session([call(1, "get_content_type", { name: "post" })], { client, secrets: [odd] });
     const result = replies[0]!.result;
     expect(result.isError).toBe(false);
     expect(Buffer.byteLength(result.content[0].text, "utf8")).toBeLessThanOrEqual(RESULT_CAP_BYTES);
@@ -246,6 +254,9 @@ describe("mcp server", () => {
     expect(body.data).not.toHaveProperty("dataSchema");
     expect(body.data.dataSchemaOmitted).toContain("barako schema <name>");
     expect(body.data.fields[0].jsonSchema.description).toHaveLength(150 * 1024);
+    expect(body.data.fields[1].description).toBe("see [redacted]");
+    expect(out.join("\n")).not.toContain(odd);
+    expect(JSON.stringify(replies[0])).not.toContain(odd);
     expect(log[0]).toContain("status=ok");
   });
 
