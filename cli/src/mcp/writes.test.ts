@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { BarakoError, type BarakoClient } from "@baryodev/barako-client";
 import { run } from "../main";
 import { RESULT_CAP_BYTES, serve } from "./server";
-import { MAX_PLANS, PLAN_TTL_MS } from "./plans";
+import { MAX_PLANS, PLAN_TTL_MS, PlanStore, type Plan } from "./plans";
 
 const KEY = "bcms_secretkey_0123456789";
 const START = Date.parse("2026-11-24T10:00:00.000Z");
@@ -550,5 +550,105 @@ describe("mcp write tools: logs and data", () => {
     expect(Object.keys(change)).toEqual(["__proto__", "field"]);
     expect(Object.getOwnPropertyDescriptor(change, "__proto__")!.value).toEqual({ to: "x" });
     expect(s.replies[0]!.result.content[0].text).toContain('"__proto__":{"to":"x"}');
+  });
+});
+
+describe("mcp write tools: gaps", () => {
+  const CHANGES: Record<string, unknown>[] = [{ etag: '"e2"' }, { version: 4 }, { status: "Published" }];
+
+  async function refusedAfterChange(planTool: string, planArgs: Json, applyTool: string, destructive: boolean, called: (c: ReturnType<typeof writer>["contents"]) => unknown) {
+    for (const change of CHANGES) {
+      const { client, contents } = writer();
+      const s = await converse(
+        [
+          () => call(1, planTool, planArgs),
+          () => {
+            contents.get.mockResolvedValue({ ...ENTRY, ...change });
+            return call(2, "ping");
+          },
+          apply(3, 0, applyTool),
+        ],
+        { client, destructive },
+      );
+      expect(s.replies[2]!.result.isError).toBe(true);
+      expect(errorOf(s.replies[2]!).code).toBe("conflict");
+      expect(errorOf(s.replies[2]!).message).toBe("The entry changed since the plan, plan again.");
+      expect(called(contents)).not.toHaveBeenCalled();
+    }
+  }
+
+  it("a status plan is refused after the target changed", async () => {
+    await refusedAfterChange("plan_change_status", { id: "a", action: "publish" }, "apply_plan", false, (c) => c.setStatus);
+  });
+
+  it("a rollback plan is refused after the target changed", async () => {
+    await refusedAfterChange("plan_rollback_entry", { id: "a", versionId: "v-9" }, "apply_destructive_plan", true, (c) => c.rollback);
+  });
+
+  it("an erase plan is refused after the target changed", async () => {
+    await refusedAfterChange("plan_erase_entry", { id: "a" }, "apply_destructive_plan", true, (c) => c.erase);
+  });
+
+  it("a token that is not base64url is refused before any lookup", async () => {
+    const { client, contents } = writer();
+    const s = await converse(
+      [
+        () => call(1, "plan_update_entry", { id: "a", data: { Title: "New" } }),
+        () => call(2, "apply_plan", { token: "abc$%", action: "update_entry", target: "a" }),
+        () => call(3, "apply_plan", { token: "A".repeat(65), action: "update_entry", target: "a" }),
+        apply(4, 0),
+      ],
+      { client },
+    );
+    for (const i of [1, 2]) {
+      expect(s.replies[i]!.result.isError).toBe(true);
+      expect(errorOf(s.replies[i]!).message).toBe('"token" must be the token the plan returned.');
+      expect(errorOf(s.replies[i]!).message).not.toContain("no such plan");
+    }
+    // The plan is still there, so the bad tokens touched nothing.
+    expect(s.replies[3]!.result.isError).toBe(false);
+    expect(contents.update.mock.calls.filter((c) => !c[2].dryRun)).toHaveLength(1);
+  });
+
+  it("expired plans are purged before the cap", async () => {
+    let t = START;
+    const { client } = writer();
+    const steps: Step[] = [
+      ...Array.from({ length: MAX_PLANS }, (_, i): Step => () => call(i + 1, "plan_create_entry", { contentType: `t${i}`, data: { A: 1 } })),
+      () => {
+        t += PLAN_TTL_MS;
+        return call(100, "plan_create_entry", { contentType: "fresh", data: { A: 1 } });
+      },
+      apply(101, MAX_PLANS),
+      apply(102, 0),
+    ];
+    const s = await converse(steps, { client, now: () => new Date(t) });
+    expect(s.replies[MAX_PLANS + 1]!.result.isError).toBe(false);
+    expect(errorOf(s.replies[MAX_PLANS + 2]!).message).toContain("no such plan");
+  });
+
+  it("the store holds one plan after expired ones are purged on commit", () => {
+    let t = START;
+    const store = new PlanStore(() => new Date(t));
+    const plan = (token: string): Plan => ({ token, expiresAt: store.issue().expiresAt, target: "a", action: "erase_entry", fingerprint: { version: 1, etag: undefined, status: undefined } });
+    for (let i = 0; i < MAX_PLANS; i++) store.commit(plan(`p${i}`));
+    expect(store.size).toBe(MAX_PLANS);
+    t += PLAN_TTL_MS;
+    store.commit(plan("fresh"));
+    expect(store.size).toBe(1);
+    expect(store.take("p0")).toBeUndefined();
+    expect(store.take("fresh")?.token).toBe("fresh");
+  });
+
+  it("a token expires at exactly the TTL and not one millisecond earlier", () => {
+    let t = START;
+    const store = new PlanStore(() => new Date(t));
+    const { token, expiresAt } = store.issue();
+    store.commit({ token, expiresAt, target: "a", action: "erase_entry", fingerprint: { version: 1, etag: undefined, status: undefined } });
+    t = START + PLAN_TTL_MS - 1;
+    expect(store.size).toBe(1);
+    t = START + PLAN_TTL_MS;
+    expect(store.size).toBe(0);
+    expect(store.take(token)).toBeUndefined();
   });
 });
