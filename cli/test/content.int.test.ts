@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { KNOWN_FIELD_TYPES } from "../src/data-schema";
+import { applyOf, mcpSession, resultData, toolCall } from "./mcp-session";
 
 // Runs the built CLI against a live server. Skipped unless BARAKO_URL is set.
 // Start the stack in cli/test/compose.yml first. See cli/README.md.
@@ -96,47 +97,6 @@ function statusOf(entry: any): string {
 }
 
 
-/** Runs `barako mcp` with a key. Each step is sent after the reply to the one before it came back, so an
- *  apply step can read the token from the plan reply. Returns every reply and what the process wrote. */
-async function mcpSession(key: string, flags: string[], steps: ((replies: any[]) => object)[]) {
-  const child = spawn(process.execPath, [MAIN, "mcp", ...flags], {
-    env: { PATH: process.env.PATH, BARAKO_URL: BASE, BARAKO_API_KEY: key },
-  });
-  let stdout = "";
-  let stderr = "";
-  let pending = "";
-  const replies: any[] = [];
-  child.stdout.setEncoding("utf8").on("data", (d: string) => {
-    stdout += d;
-    pending += d;
-    for (let nl = pending.indexOf("\n"); nl >= 0; nl = pending.indexOf("\n")) {
-      replies.push(JSON.parse(pending.slice(0, nl)));
-      pending = pending.slice(nl + 1);
-    }
-  });
-  child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
-  const closed = new Promise<number | null>((resolve) => child.on("close", resolve));
-  for (const [i, step] of steps.entries()) {
-    child.stdin.write(JSON.stringify(step(replies)) + "\n");
-    const deadline = Date.now() + 30_000;
-    while (replies.length <= i) {
-      if (Date.now() > deadline) throw new Error("No reply from barako mcp.");
-      await new Promise((r) => setTimeout(r, 20));
-    }
-  }
-  child.stdin.end();
-  expect(await closed).toBe(0);
-  expect(stdout).not.toContain(key);
-  expect(stderr).not.toContain(key);
-  return replies;
-}
-
-const toolCall = (id: number, name: string, args: object) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
-const resultData = (reply: any) => JSON.parse(reply.result.content[0].text).data;
-const applyOf = (name: string, id: number, planIndex: number) => (replies: any[]) => {
-  const plan = resultData(replies[planIndex]);
-  return toolCall(id, name, { token: plan.token, action: plan.action, target: plan.target });
-};
 const newPost = () => ({ Title: "From MCP", Slug: `mcp-${randomBytes(4).toString("hex")}`, Body: "# Hello\n" });
 
 describe.skipIf(!BASE)("barako against a live server", () => {
@@ -337,7 +297,7 @@ describe.skipIf(!BASE)("barako against a live server", () => {
   });
 
   it("mcp: a read-only key cannot create, the API refuses it", async () => {
-    const replies = await mcpSession(readKey, ["--allow-writes"], [
+    const replies = await mcpSession(BASE, readKey, ["--allow-writes"], [
       () => toolCall(1, "plan_create_entry", { contentType: "post", data: newPost() }),
     ]);
     // The plan's dry run is a write, so the API refuses a read-only key at plan time.
@@ -347,7 +307,7 @@ describe.skipIf(!BASE)("barako against a live server", () => {
 
   it("mcp: a content:read and content:write key plans and applies a create", async () => {
     const data = newPost();
-    const replies = await mcpSession(apiKey, ["--allow-writes"], [
+    const replies = await mcpSession(BASE, apiKey, ["--allow-writes"], [
       () => toolCall(1, "plan_create_entry", { contentType: "post", data }),
       applyOf("apply_plan", 2, 0),
     ]);
@@ -361,7 +321,7 @@ describe.skipIf(!BASE)("barako against a live server", () => {
   });
 
   it("mcp: erase without content:destructive is refused with 403 naming the scope", async () => {
-    const replies = await mcpSession(apiKey, ["--allow-writes", "--allow-destructive"], [
+    const replies = await mcpSession(BASE, apiKey, ["--allow-writes", "--allow-destructive"], [
       () => toolCall(1, "plan_erase_entry", { id: mcpId }),
       applyOf("apply_destructive_plan", 2, 0),
     ]);
@@ -374,7 +334,7 @@ describe.skipIf(!BASE)("barako against a live server", () => {
   });
 
   it("mcp: the same erase applies with content:destructive and the entry is gone", async () => {
-    const replies = await mcpSession(destructiveKey, ["--allow-writes", "--allow-destructive"], [
+    const replies = await mcpSession(BASE, destructiveKey, ["--allow-writes", "--allow-destructive"], [
       () => toolCall(1, "plan_erase_entry", { id: mcpId }),
       applyOf("apply_destructive_plan", 2, 0),
     ]);
