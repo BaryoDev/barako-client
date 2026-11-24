@@ -43,7 +43,7 @@ Every command accepts `--url`, `--key-file` and `-o json|text`. The default is `
 | `content get <id>` | `barako content get 3f2a...` or `barako content get --slug post/hello` |
 | `content history <id>` | `barako content history 3f2a...` |
 | `pages tree` | `barako pages tree` |
-| `mcp` | `barako mcp` serves read tools to an MCP client over stdio. See MCP server. |
+| `mcp` | `barako mcp` serves read tools to an MCP client over stdio. `--allow-writes` and `--allow-destructive` add write tools. See MCP server. |
 | `content create <type>` | `barako content create post --set Title=Hello --set Slug=hello --set-file Body=body.md` |
 | `content update <id>` | `barako content update 3f2a... --set Title=New --expect-version 3` |
 | `content publish <id>` | `barako content publish 3f2a...` |
@@ -135,7 +135,7 @@ naming the resource and the key.
 
 `barako mcp` serves the CMS to an MCP client (an AI agent or editor) over stdio. It reads
 newline-delimited JSON-RPC 2.0 on stdin and writes only protocol messages on stdout. Logs go to stderr.
-It opens no network port. This version is read only: there are no write tools and no flag that adds them.
+It opens no network port. It is read only unless you pass `--allow-writes` or `--allow-destructive`.
 
 Add it to an MCP client as a stdio server. Read the key from a file, so the key value is not in the client's config:
 
@@ -228,3 +228,18 @@ The compose file holds test values only. Set `BARAKO_CMS_TAG` to use another cor
 ## License
 
 MIT
+
+### Write tools
+
+Two flags add write tools. `--allow-writes` adds `plan_create_entry`, `plan_update_entry`, `plan_change_status` and `apply_plan`. `--allow-destructive` needs `--allow-writes` and adds `plan_rollback_entry`, `plan_erase_entry` and `apply_destructive_plan`. Without a flag, those tools do not exist.
+
+Key scopes: `content:read` by default, plus `content:write` for writes. Give `content:destructive` only when you pass `--allow-destructive`. The server checks the scopes, so a key without one gets a 403 on apply.
+
+Writes take two steps. A plan tool checks the change and sends nothing that stores data. It returns what would change and a token. The apply tool sends the write.
+
+- A token works once, lives in memory only and expires after 10 minutes. At most 20 plans are kept, and the oldest is dropped first. A failed apply spends the token.
+- Apply must name the same action and target as the plan.
+- Apply reads the entry again and refuses if its version, ETag or status changed since the plan. Plan again.
+- Only update sends `If-Match`. A status change, a rollback and an erase rely on that re-read, so a change made between the re-read and the write is not caught.
+- A create sends the idempotency key made at plan time. After a network failure on apply, list the entries before you plan a create again, or you may make a second entry.
+- A plan over 256 KB is refused and makes no token. An apply whose result is over 256 KB still makes the change, and says only that the result is too large to show.
