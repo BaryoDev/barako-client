@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import type { BarakoClient, ResourceDefinition } from "@baryodev/barako-client";
 import { readFileSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
 import { connect, type Env } from "./connect";
 import { CliError, render, scrubText, toCliError, type Outcome } from "./output";
 import { commands, type ArgSpec, type Command, type Stdio } from "./registry";
@@ -9,6 +10,7 @@ import "./commands/destructive";
 import "./commands/generic";
 import "./commands/mcp";
 import "./commands/read";
+import "./commands/stack";
 import "./commands/status";
 import "./commands/write";
 
@@ -17,6 +19,10 @@ export interface Io {
   write(stream: "stdout" | "stderr", text: string): void;
   /** Standard input, for `mcp`. */
   stdin?: AsyncIterable<string | Uint8Array>;
+  /** True when stdin is a terminal. `reset` asks only then. */
+  isTTY?: boolean;
+  /** Asks one question on the terminal and returns the answer. */
+  ask?(question: string): Promise<string>;
   /** Calls back when stdout fails, such as a closed pipe (EPIPE). `mcp` stops serving then. */
   onStdoutError?(cb: () => void): void;
 }
@@ -214,7 +220,7 @@ export async function run(argv: string[], env: Env, io: Io): Promise<number> {
           onWriteError: io.onStdoutError,
         }
       : undefined;
-    const result = await found.command.run({ client, readFile: io.readFile, fileResources, stdio, secrets }, args);
+    const result = await found.command.run({ client, readFile: io.readFile, fileResources, stdio, secrets, isTty: io.isTTY === true, ask: io.ask }, args);
     if (found.command.silent) return 0;
     outcome = { ok: true, result };
   } catch (err) {
@@ -239,6 +245,15 @@ if (/(^|[\\/])(main\.js|barako)$/.test(entry)) {
       (stream === "stdout" ? process.stdout : process.stderr).write(text);
     },
     stdin: process.stdin,
+    isTTY: process.stdin.isTTY === true,
+    ask: async (question) => {
+      const rl = createInterface({ input: process.stdin, output: process.stderr });
+      try {
+        return await rl.question(question);
+      } finally {
+        rl.close();
+      }
+    },
     // Without a listener an EPIPE is an unhandled error and the process dies with a stack trace.
     onStdoutError: (cb) => process.stdout.on("error", cb),
   }).then((code) => {

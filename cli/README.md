@@ -60,6 +60,10 @@ Every command accepts `--url`, `--key-file` and `-o json|text`. The default is `
 | `create <resource>` | `barako create invoices --set total:=9 --dry-run` |
 | `update <resource> <id>` | `barako update invoices i1 --set total:=7` |
 | `delete <resource> <id>` | `barako delete invoices i1 --confirm i1` |
+| `up` | `barako up --port 8080 --kit blog`. Starts a local stack (Postgres, core, Press, Brew, Caddy) from pinned images with Docker, then sets it up. See Local stack. Needs no connection. |
+| `status` | `barako status` shows which stack services run and the URLs. Needs no connection. |
+| `down` | `barako down` stops the stack and removes its containers. The data is kept. Needs no connection. |
+| `reset` | `barako reset --yes` stops the stack and deletes its data. Asks first on a terminal. Needs no connection. |
 
 Options worth knowing:
 
@@ -130,6 +134,31 @@ or whitespace, and its only placeholder is `{id}` as a whole segment. `get`, `up
 `list` and `create` must not have it. Methods are GET for `list` and `get`, POST for `create`, PUT or PATCH for
 `update` and DELETE for `delete`. `update` may also hold `"merge": "data"`. `get`, `update` and `delete` hold `{id}` exactly once. An unknown key, or any other fault, refuses the file with a usage error
 naming the resource and the key.
+
+## Local stack
+
+`barako up` runs core, Press (the site), Brew (the console), Postgres and Caddy with Docker Compose, from images pinned in this release. It needs Docker with Compose 2.17 or newer. The first run pulls the images and can take several minutes.
+
+| Host | What it serves |
+| --- | --- |
+| `http://client.localhost:8080` | The Press site |
+| `http://admin.localhost:8080` | The Brew console, and the API under `/api` |
+| `http://api.localhost:8080` | The API |
+| `http://127.0.0.1:5005` | The API, for the CLI and `barako mcp` |
+
+The port is 8080 unless you pass `--port` (1024 to 65535, not 5005). Everything listens on 127.0.0.1 only.
+
+After the stack is healthy, `up` signs in as `admin`, creates the tenant `client`, applies the `site` kit (Press needs it) and then your kit, and makes an API key with `content:read` and `content:write`. The key expires after 365 days. `--kit` takes a name core knows (lower-case letters, digits and hyphens, default `blog`, which adds post, category, author and page) or the path to a blueprint file, which is copied into the stack folder and read by core. A file must be plain JSON with a `name`, and the name cannot be one of core's built-in kits (blog, devsite, docs, email, events, portfolio, site), because core would use the built-in. Start a relative path with `./`. A second `up` does not sign in or make a key again. It checks that the key still works and makes a new one if core refuses it. A different `--kit`, or an edited kit file, applies that kit again, which only adds types. If an `api-key` file is there from an earlier `up`, it is kept, and `up` says so.
+
+`up` returns only after every service has run 10 seconds without a restart, also on a running stack, where it waits only when a service started less than 10 seconds ago. A service that keeps restarting fails `up` after a minute, and the error names it and the `docker logs` command that shows why.
+
+Everything lives in `~/.barako/stack`: the compose files, `state.json`, `.env` (the generated passwords, mode 0600, including `ADMIN_PASSWORD`) and `api-key` (the key, mode 0600). `up` never prints the password or the key. It prints the `barako mcp` line to use, which reads the key from its file.
+
+- `barako down` removes the containers and keeps the database, `.env` and the key.
+- `barako reset` also deletes the database and the key. The next `up` starts from nothing. `.env` stays, so the admin password stays.
+- `--latest` uses the newest published core, Press and Brew images instead of the pinned ones. It is not tested against this release.
+
+Brew keeps its refresh cookie `Secure` because core does that outside the Development environment. Chrome treats `http://*.localhost` as a secure context, so it is expected to keep the cookie. Firefox and Safari are not checked yet, and console sign-in may fail there. None of the three has been tried against this stack.
 
 ## MCP server
 

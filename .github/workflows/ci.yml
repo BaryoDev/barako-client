@@ -67,6 +67,30 @@ jobs:
         if: always()
         run: docker compose -f cli/test/compose.yml down -v
 
+  # The local stack from the published images: barako up, a page through Press, the health routes
+  # without a redirect, and barako reset. The images are public on ghcr, so no login is needed. The
+  # file skips unless BARAKO_STACK_INT is set, so the build and live jobs never start a stack.
+  stack:
+    name: Local stack
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Stack test
+        env:
+          BARAKO_STACK_INT: "1"
+          BARAKO_STACK_PORT: "18080"
+        run: npx vitest run --config cli/vitest.int.config.ts cli/test/stack.int.test.ts
+
   # A tag can be moved after review, a commit SHA cannot. Every action in every workflow is pinned
   # by full SHA with the version in a comment, and this fails the build when one is not.
   pins:
