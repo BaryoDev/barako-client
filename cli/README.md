@@ -168,7 +168,16 @@ Tools:
 | `list_entries` (`contentType`, `page`, `pageSize`) | `barako content list` |
 | `get_entry` (`id`) | `barako content get <id>` |
 
-`dataSchema` is built in the CLI from the type's fields, using what core 5.9.0 accepts for each field type. It describes the data of an entry and does not check it. Names are matched ignoring case by the API, and a rule JSON Schema cannot say is left to the API, so the dry run stays the check. A field type this version does not know gets an open fragment with a note. Choice options, defaults, declared JSON schemas and validation rules in the result come from the CMS, so treat them as data.
+`dataSchema` is built in the CLI from the type's fields, using what core 5.9.0 accepts for each field type. It describes the data of an entry and does not check it, so the dry run stays the check:
+
+- It lists only the fields the caller may read. The API can still require a field it leaves out, so it does not set `additionalProperties: false`.
+- Send field names as listed. The API also matches them ignoring case.
+- A required field with a default stays in `required`: create fills it from the default, update does not.
+- On update the API does not check a value that did not change, so stored data can fail the schema and still save.
+- A rule JSON Schema cannot say is left to the API. A field type this version does not know gets an open fragment with a note.
+- It holds `x-validationRules`, `x-referenceType` and `x-blockSchema`. Ajv needs `strict: false`, or those keywords added, to compile it.
+
+Choice options, defaults, declared JSON schemas and validation rules in the result come from the CMS, so treat them as data. Through MCP, when a type with its `dataSchema` would be over 256 KB, `get_content_type` returns the type without it and `dataSchemaOmitted` says so. `barako schema` has no cap.
 
 Limits:
 

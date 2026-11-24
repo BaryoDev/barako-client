@@ -46,7 +46,7 @@ const typesCommand: Command = {
 
 const schemaCommand: Command = {
   name: "schema",
-  summary: "Show the fields of one content type.",
+  summary: "Show the fields of one content type and a JSON Schema for the data of its entries.",
   args: [{ name: "type", kind: "positional", type: "string", required: true, description: "Content type name." }],
   async run({ client }, args) {
     return getContentType(client, str(args, "type")!);

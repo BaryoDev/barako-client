@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
   # Nightly, so a new advisory against an unchanged lockfile turns the audit job red without a push.
-  # Only the audit and secrets jobs run on it. A failed run is the signal; nothing files an issue.
+  # The audit, secrets and live jobs run on it. A failed run is the signal; nothing files an issue.
   schedule:
     - cron: "17 4 * * *"
 
