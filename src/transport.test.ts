@@ -895,13 +895,20 @@ describe("a body that fails to read", () => {
 describe("contract range", () => {
   const admin = (v: string) => ({ "X-Api-Contract-Version": v });
 
-  it("admin 17 on an admin path warns once", async () => {
+  it("admin 18 on an admin path warns once", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: mockFetch([{ body: page, headers: admin("17") }]) });
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: mockFetch([{ body: page, headers: admin("18") }]) });
     await cms.contents.list();
     await cms.contents.list();
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toMatch(/admin contract 17/);
+    expect(warn.mock.calls[0][0]).toMatch(/admin contract 18/);
+  });
+
+  it("admin 17 on an admin path does not warn", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const cms = createClient({ baseUrl: BASE, apiKey: "k", fetch: mockFetch([{ body: page, headers: admin("17") }]) });
+    await cms.contents.list();
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("delivery 11 on a public path warns once", async () => {
@@ -916,11 +923,11 @@ describe("contract range", () => {
     expect(warn.mock.calls[0][0]).toMatch(/delivery contract 11/);
   });
 
-  it("admin 17 on a public path with delivery 10 does not warn", async () => {
+  it("admin 18 on a public path with delivery 10 does not warn", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const cms = createClient({
       baseUrl: BASE,
-      fetch: mockFetch([{ body: page, headers: { ...admin("17"), "X-Delivery-Contract-Version": "10" } }]),
+      fetch: mockFetch([{ body: page, headers: { ...admin("18"), "X-Delivery-Contract-Version": "10" } }]),
     });
     await cms.public.list("post");
     expect(warn).not.toHaveBeenCalled();
@@ -937,7 +944,7 @@ describe("contract range", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const cms = createClient({
       baseUrl: BASE,
-      fetch: mockFetch([{ body: page, headers: { ...admin("17"), "X-Delivery-Contract-Version": "12abc" } }]),
+      fetch: mockFetch([{ body: page, headers: { ...admin("18"), "X-Delivery-Contract-Version": "12abc" } }]),
     });
     await cms.public.list("post");
     expect(warn).not.toHaveBeenCalled();
@@ -972,12 +979,12 @@ describe("contract range", () => {
     const cms = createClient({
       baseUrl: BASE,
       apiKey: "k",
-      fetch: mockFetch([{ body: page, headers: admin("17") }]),
+      fetch: mockFetch([{ body: page, headers: admin("18") }]),
       onContractMismatch: (info) => seen.push(info),
     });
     await cms.contents.list();
     expect(warn).not.toHaveBeenCalled();
-    expect(seen).toEqual([{ surface: "admin", apiVersion: 17, min: 1, max: 16 }]);
+    expect(seen).toEqual([{ surface: "admin", apiVersion: 18, min: 1, max: 17 }]);
   });
 
   it("a mismatch is checked on an error response and does not change it", async () => {
@@ -986,7 +993,7 @@ describe("contract range", () => {
     const cms = createClient({
       baseUrl: BASE,
       apiKey: "k",
-      fetch: mockFetch([{ status: 500, body: { message: "boom" }, headers: admin("17") }]),
+      fetch: mockFetch([{ status: 500, body: { message: "boom" }, headers: admin("18") }]),
       onContractMismatch: (info) => seen.push(info),
     });
     await expect(cms.contents.list()).rejects.toMatchObject({ status: 500, message: "boom" });
@@ -997,7 +1004,7 @@ describe("contract range", () => {
     const cms = createClient({
       baseUrl: BASE,
       apiKey: "k",
-      fetch: mockFetch([{ body: page, headers: admin("17") }]),
+      fetch: mockFetch([{ body: page, headers: admin("18") }]),
       onContractMismatch: () => {
         throw new Error("bad callback");
       },

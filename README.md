@@ -12,7 +12,7 @@ Framework-agnostic and isomorphic: it runs in Node, the browser, and edge runtim
 
 ## Compatibility
 
-This version works with API contract 1 to 16 on the admin routes (`X-Api-Contract-Version`) and 1
+This version works with API contract 1 to 17 on the admin routes (`X-Api-Contract-Version`) and 1
 to 10 on public delivery (`cms.public`, `X-Delivery-Contract-Version`). The numbers are exported as
 `SUPPORTED_CONTRACT`. An API from before the delivery split sends only the admin header, and then
 that number is also the delivery number. The client reads both headers on every response, including
