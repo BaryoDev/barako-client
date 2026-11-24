@@ -17,6 +17,10 @@ export interface RunContext {
   stdio?: Stdio;
   /** Key values the command must keep out of anything it writes. */
   secrets?: readonly string[];
+  /** True when stdin is a terminal. Absent in most tests. */
+  isTty?: boolean;
+  /** Asks one question on the terminal and returns the answer. */
+  ask?(question: string): Promise<string>;
 }
 
 export interface Stdio {
