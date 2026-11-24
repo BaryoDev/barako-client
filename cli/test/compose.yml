@@ -20,7 +20,7 @@ services:
       retries: 12
 
   app:
-    image: ghcr.io/baryodev/barako-cms:${BARAKO_CMS_TAG:-5.8.0}
+    image: ghcr.io/baryodev/barako-cms:${BARAKO_CMS_TAG:-5.9.0}
     ports:
       - "127.0.0.1:5188:8080"
     environment:
