@@ -50,7 +50,7 @@ services:
       # Caddy is the only proxy, at a fixed address, so the real client address reaches the rate limiter.
       ForwardedHeaders__Enabled: "true"
       ForwardedHeaders__KnownProxies__0: ${CADDY_IP}
-      AllowedHosts: "api;api.localhost;admin.localhost;localhost;127.0.0.1"
+      AllowedHosts: "api;api.localhost;admin.localhost;client.localhost;localhost;127.0.0.1"
       CORS__AllowedOrigins: "http://admin.localhost:\${PORT},http://client.localhost:\${PORT}"
       # Every port is published on 127.0.0.1 only, so the limits are raised for a local stack.
       RateLimiting__Global__PermitLimit: "6000"
@@ -72,7 +72,6 @@ services:
     environment:
       CMS_URL: http://api:8080
       CMS_TENANT: ${TENANT}
-      SITE_URL: "http://client.localhost:\${PORT}"
       PRESS_SECRET: \${PRESS_SECRET:?missing from .env}
       PRESS_CONSOLE_ORIGINS: "http://admin.localhost:\${PORT}"
     networks: [edge]
@@ -118,14 +117,16 @@ volumes:
 `;
 
 export const CADDYFILE = `# Written by barako up. Plain http on a local port; every host name ends in .localhost.
+# Core sees the host name "api", which its AllowedHosts list holds.
 {
 	auto_https off
 	admin off
 }
 
 http://client.localhost:8080 {
-	handle /files* {
+	handle /api/public/files* {
 		reverse_proxy api:8080 {
+			header_up Host api
 			header_up X-Tenant ${TENANT}
 		}
 	}
@@ -135,8 +136,15 @@ http://client.localhost:8080 {
 }
 
 http://admin.localhost:8080 {
+	handle /health {
+		reverse_proxy api:8080 {
+			header_up Host api
+		}
+	}
 	handle /api/* {
-		reverse_proxy api:8080
+		reverse_proxy api:8080 {
+			header_up Host api
+		}
 	}
 	handle {
 		reverse_proxy console:3000
@@ -144,7 +152,9 @@ http://admin.localhost:8080 {
 }
 
 http://api.localhost:8080 {
-	reverse_proxy api:8080
+	reverse_proxy api:8080 {
+		header_up Host api
+	}
 }
 `;
 
