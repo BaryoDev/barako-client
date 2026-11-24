@@ -28,6 +28,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # Builds again and runs cli/test/*.int.test.ts. The live server suite skips without a server;
+      # the MCP pipe test runs against the built CLI.
+      - run: npm run test:int
 
   # A tag can be moved after review, a commit SHA cannot. Every action in every workflow is pinned
   # by full SHA with the version in a comment, and this fails the build when one is not.

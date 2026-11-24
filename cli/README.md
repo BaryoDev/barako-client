@@ -153,6 +153,7 @@ Add it to an MCP client as a stdio server. Read the key from a file, so the key 
 
 Claude Code's `.mcp.json` also expands `${VAR}` in `command`, `args` and `env`, so
 `"env": { "BARAKO_URL": "${BARAKO_URL}", "BARAKO_API_KEY": "${BARAKO_API_KEY}" }` takes both from your shell.
+Set `"args": ["mcp"]` with it: `--key-file` overrides `BARAKO_API_KEY`, and a missing file is an error.
 Never commit a config file that holds the key value itself.
 
 The connection rules in Connect apply (`--url`, `--allow-http`). `--api-key` and the other flags that take
