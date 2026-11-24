@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync, closeSync, existsSync, fstatSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -18,7 +18,6 @@ import {
 
 export const DEFAULT_PORT = 8080;
 const PROJECT = "barako";
-const SERVICES = 5;
 // --wait and --wait-timeout both arrived in compose 2.17.0.
 const MIN_COMPOSE = [2, 17, 0];
 const VOLUME = "barako_pgdata";
@@ -44,6 +43,8 @@ export interface StackDeps {
   /** One request to the stack's API. Status 0 means it could not be reached. */
   http(req: HttpRequest): Promise<HttpReply>;
   sleep(ms: number): Promise<void>;
+  /** Milliseconds, for the readiness deadline. */
+  now(): number;
 }
 
 export interface HttpRequest {
@@ -51,6 +52,8 @@ export interface HttpRequest {
   url: string;
   headers?: Record<string, string>;
   json?: unknown;
+  /** Cap for this request. Default 20 seconds. */
+  timeoutMs?: number;
 }
 
 export interface HttpReply {
@@ -102,7 +105,7 @@ export function realDeps(): StackDeps {
           headers: { ...(req.json === undefined ? {} : { "content-type": "application/json" }), ...req.headers },
           body: req.json === undefined ? undefined : JSON.stringify(req.json),
           redirect: "manual",
-          signal: AbortSignal.timeout(20_000),
+          signal: AbortSignal.timeout(req.timeoutMs ?? 20_000),
         });
         return { status: res.status, body: await res.text() };
       } catch {
@@ -110,6 +113,7 @@ export function realDeps(): StackDeps {
       }
     },
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
   };
 }
 
@@ -126,12 +130,17 @@ interface State {
   latest: boolean;
   versions: Versions;
   /** Set once the tenant, kit and API key exist, so a second up does not sign in again. */
-  bootstrap?: { kit: string };
+  bootstrap?: { kit: string; hash?: string };
 }
 
 /** The kit name rule core applies, anchored to the whole string. JavaScript's $ without the m flag never matches before a final newline. */
 const KIT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const DEFAULT_KIT = "site";
+const DEFAULT_KIT = "blog";
+/** The kit every stack gets first: Press needs the site settings. */
+const BASE_KIT = "site";
+/** The blueprints built into core 5.9.0. Core lists built-ins first, so a file with one of these names is never used. */
+const BUILTIN_KITS = ["blog", "devsite", "docs", "email", "events", "portfolio", "site"];
+const SERVICE_LIST = ["postgres", "api", "site", "console", "caddy"];
 const MAX_KIT_BYTES = 256 * 1024;
 const KEY_FILE = "api-key";
 const ADMIN_URL = `http://127.0.0.1:${API_HOST_PORT}`;
@@ -140,35 +149,46 @@ export interface Kit {
   name: string;
   /** The file's text when the kit came from a path. It is copied into the stack folder, never run. */
   file?: string;
+  /** sha256 of the file's text. */
+  hash?: string;
 }
+
+const NOT_A_KIT = "--kit is not a kit name (lower-case letters, digits and hyphens) and not a file that exists. Start a relative path with ./";
+const KIT_JSON = 'The kit file must be plain JSON (no comments, no trailing commas) with a "name" field of lower-case letters, digits and hyphens.';
 
 /** A kit given with --kit: a name core knows, or a path to a blueprint file. A name wins when the text is a valid name. */
 export function resolveKit(value: unknown): Kit | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.length === 0) throw new CliError("usage", "--kit needs a kit name or a path to a kit file.");
   if (KIT_NAME.test(value)) return { name: value };
-  let isFile = false;
+  // One descriptor for the check and the read, so the file cannot change between them.
+  let fd: number;
   try {
-    isFile = statSync(value).isFile();
+    fd = openSync(value, "r");
   } catch {
-    // Not a file.
+    throw new CliError("usage", NOT_A_KIT);
   }
-  if (!isFile) {
-    throw new CliError("usage", "--kit is not a kit name (lower-case letters, digits and hyphens) and not a file that exists. Start a relative path with ./");
+  let text: string;
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw new CliError("usage", NOT_A_KIT);
+    if (st.size > MAX_KIT_BYTES) throw new CliError("usage", "The kit file is larger than 256 KB.");
+    text = readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
   }
-  if (statSync(value).size > MAX_KIT_BYTES) throw new CliError("usage", "The kit file is larger than 256 KB.");
-  const text = readFileSync(value, "utf8");
   let name: unknown;
   try {
-    name = (JSON.parse(text) as { name?: unknown }).name;
+    name = (JSON.parse(text.replace(/^\uFEFF/, "")) as { name?: unknown }).name;
   } catch {
-    throw new CliError("usage", "The kit file is not valid JSON.");
+    throw new CliError("usage", KIT_JSON);
   }
   const norm = typeof name === "string" ? name.trim().toLowerCase() : "";
-  if (!KIT_NAME.test(norm)) {
-    throw new CliError("usage", "The kit file needs a name of lower-case letters, digits and hyphens.");
+  if (!KIT_NAME.test(norm)) throw new CliError("usage", KIT_JSON);
+  if (BUILTIN_KITS.includes(norm)) {
+    throw new CliError("usage", `The kit file is named '${norm}', which is a built-in kit in core 5.9.0, so core would use the built-in and ignore the file. Rename the kit in the file.`);
   }
-  return { name: norm, file: text };
+  return { name: norm, file: text, hash: createHash("sha256").update(text).digest("hex") };
 }
 
 
@@ -222,7 +242,11 @@ function readState(dir: string): State | undefined | typeof CORRUPT {
         const p = (s.versions as unknown as Record<string, Pin | undefined> | undefined)?.[k];
         return !!p && typeof p.image === "string" && typeof p.tag === "string";
       });
-    return ok ? s : CORRUPT;
+    const b = (s as { bootstrap?: unknown }).bootstrap;
+    const bootOk =
+      b === undefined ||
+      (typeof b === "object" && b !== null && typeof (b as { kit?: unknown }).kit === "string" && ((b as { hash?: unknown }).hash === undefined || typeof (b as { hash?: unknown }).hash === "string"));
+    return ok && bootOk ? s : CORRUPT;
   } catch {
     return CORRUPT;
   }
@@ -276,16 +300,25 @@ function envComplete(dir: string): boolean {
 }
 
 /** Writes a 0600 file that must not exist yet. A tmp file is linked into place so a crash never leaves half a file. */
-function createPrivateFile(dir: string, name: string, text: string): void {
+export function createPrivateFile(dir: string, name: string, text: string): void {
   const tmp = join(dir, `${name}.tmp`);
+  const clash = () => new CliError("conflict", `Another barako up wrote ${name === ".env" ? ".env" : "the key file"} first. Run barako up again.`);
   try {
     unlinkSync(tmp);
   } catch {
     // No leftover.
   }
-  writeFileSync(tmp, text, { mode: 0o600, flag: "wx" });
+  try {
+    writeFileSync(tmp, text, { mode: 0o600, flag: "wx" });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") throw clash();
+    throw e;
+  }
   try {
     linkSync(tmp, join(dir, name));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") throw clash();
+    throw e;
   } finally {
     unlinkSync(tmp);
   }
@@ -309,7 +342,9 @@ export function writeStack(deps: StackDeps, dir: string, state: State): void {
     };
     createPrivateFile(dir, ".env", SECRET_NAMES.map((k) => `${k}=${values[k]}`).join("\n") + "\n");
   }
+  // Core runs as another user in its container and must read the kit, which is not a secret. A umask of 077 would hide it.
   mkdirSync(join(dir, "blueprints"), { recursive: true, mode: 0o755 });
+  chmodSync(join(dir, "blueprints"), 0o755);
   writeIfChanged(join(dir, "compose.yml"), COMPOSE_YML);
   writeIfChanged(join(dir, "Caddyfile"), CADDYFILE);
   writeIfChanged(join(dir, "app-role.sql"), APP_ROLE_SQL);
@@ -367,10 +402,11 @@ async function requireDocker(deps: StackDeps): Promise<void> {
   }
 }
 
-async function runningCount(deps: StackDeps, dir: string, state: State): Promise<number> {
-  const r = await compose(deps, dir, state, ["ps", "--status", "running", "-q"]);
+/** The services compose reports as running. */
+async function runningServices(deps: StackDeps, dir: string, state: State): Promise<string[]> {
+  const r = await compose(deps, dir, state, ["ps", "--services", "--status", "running"]);
   if (r.code !== 0) throw failure("docker compose ps failed", r, dir);
-  return r.stdout.split("\n").filter((l) => l.trim()).length;
+  return r.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
 function fail(step: string, r: HttpReply): CliError {
@@ -388,56 +424,118 @@ function field(body: string, ...names: string[]): string | undefined {
   return undefined;
 }
 
-/**
- * Creates the tenant, applies the kit and, when there is no key file, makes the API key. Every step
- * tolerates having been done already. Errors name a step and a status, never a response body, and the
- * password and the key are never printed.
- */
-async function bootstrap(deps: StackDeps, dir: string, kit: Kit, log: (line: string) => void): Promise<{ keyCreated: boolean }> {
-  const password = parseEnv(readFileSync(join(dir, ".env"), "utf8")).ADMIN_PASSWORD ?? "";
-  const call = (method: "GET" | "POST", path: string, opts: { token?: string; tenant?: string; json?: unknown } = {}) =>
-    deps.http({
-      method,
-      url: ADMIN_URL + path,
-      json: opts.json,
-      headers: {
-        ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
-        ...(opts.tenant ? { "x-tenant": opts.tenant } : {}),
-      },
-    });
-
-  log("Waiting for the API.");
-  let ready = false;
-  for (let i = 0; i < 90 && !ready; i++) {
-    ready = (await call("GET", "/health/ready")).status === 200;
-    if (!ready) await deps.sleep(1000);
+/** Core's validation texts from a problem body, without control characters, at most 500 characters. Only for the kit route. */
+function reasons(body: string): string {
+  const out: string[] = [];
+  try {
+    const errors = (JSON.parse(body) as { errors?: unknown }).errors;
+    const walk = (v: unknown): void => {
+      if (typeof v === "string") out.push(v);
+      else if (Array.isArray(v)) v.forEach(walk);
+      else if (v && typeof v === "object") Object.values(v).forEach(walk);
+    };
+    walk(errors);
+  } catch {
+    // No reasons to show.
   }
-  if (!ready) throw new CliError("network", "The API did not become ready in 90 seconds. Check docker compose logs for the api service.");
+  // eslint-disable-next-line no-control-regex
+  return out.join(" ").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+const READY_MS = 90_000;
+
+async function waitReady(deps: StackDeps, log: (line: string) => void): Promise<void> {
+  log("Waiting for the API.");
+  const deadline = deps.now() + READY_MS;
+  for (;;) {
+    const left = deadline - deps.now();
+    if (left <= 0) break;
+    const r = await deps.http({ method: "GET", url: `${ADMIN_URL}/health/ready`, timeoutMs: Math.min(5000, left) });
+    if (r.status === 200) return;
+    await deps.sleep(1000);
+  }
+  throw new CliError("network", "The API did not become ready in 90 seconds. Check docker compose logs for the api service. Run barako up again.");
+}
+
+function api(deps: StackDeps, method: "GET" | "POST", path: string, opts: { token?: string; tenant?: string; json?: unknown } = {}) {
+  return deps.http({
+    method,
+    url: ADMIN_URL + path,
+    json: opts.json,
+    headers: {
+      ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+      ...(opts.tenant ? { "x-tenant": opts.tenant } : {}),
+    },
+  });
+}
+
+/** Asks the API whether the key in the file still opens anything. A network failure is an error, never a reason to start over. */
+async function keyStillWorks(deps: StackDeps, dir: string): Promise<boolean> {
+  const key = readFileSync(join(dir, KEY_FILE), "utf8").trim();
+  const r = await api(deps, "GET", "/api/content-types", { token: key, tenant: TENANT });
+  if (r.status === 401) return false;
+  // A 403 means the key was recognised.
+  if (r.status === 200 || r.status === 403) return true;
+  throw fail("Checking the API key", r);
+}
+
+/**
+ * Creates the tenant, applies the kits and, when there is no key file, makes the API key. With a marker
+ * the tenant exists, so it signs in once, as the tenant. Errors name a step and a status, never a
+ * response body (the kit route also gives core's validation texts), and the password and the key are
+ * never printed.
+ */
+async function bootstrap(
+  deps: StackDeps,
+  dir: string,
+  kit: Kit,
+  opts: { first: boolean },
+  log: (line: string) => void,
+): Promise<{ keyCreated: boolean }> {
+  const password = parseEnv(readFileSync(join(dir, ".env"), "utf8")).ADMIN_PASSWORD ?? "";
+  const call = (method: "GET" | "POST", path: string, o: { token?: string; tenant?: string; json?: unknown } = {}) => api(deps, method, path, o);
 
   // Sign-in is limited to 5 attempts in 15 minutes, so there is no retry here.
   const signIn = async (tenant?: string): Promise<string> => {
     const r = await call("POST", "/api/auth/login", { tenant, json: { Username: ADMIN_USER, Password: password } });
-    if (r.status === 429) throw new CliError("conflict", "Sign-in is rate limited (5 attempts in 15 minutes). Wait 15 minutes and run barako up again.");
-    if (r.status === 401) throw new CliError("unauthorized", `The admin password in .env was refused. ${BROKEN}`);
+    if (r.status === 429) throw new CliError("server", "Sign-in is rate limited (5 attempts in 15 minutes). Wait 15 minutes and run barako up again.");
+    if (r.status === 401) {
+      throw new CliError(
+        "unauthorized",
+        tenant
+          ? `Signing in to the tenant ${tenant} was refused. Check that admin is an active member of it and that the tenant is active.`
+          : `The admin password in .env was refused. ${BROKEN}`,
+      );
+    }
     if (r.status !== 200) throw fail("Sign-in", r);
     const token = field(r.body, "token", "Token");
     if (!token) throw new CliError("server", "Sign-in did not return a token.");
     return token;
   };
 
+  await waitReady(deps, log);
   log("Signing in.");
-  const first = await signIn();
-  const tenant = await call("POST", "/api/tenants", { token: first, json: { Handle: TENANT, Name: "Client" } });
-  if (tenant.status === 409) throw new CliError("conflict", `Creating the tenant '${TENANT}' clashed with a domain already in use.`);
-  const existed = tenant.status === 400 && tenant.body.includes("A tenant with this handle already exists.");
-  if (tenant.status !== 200 && tenant.status !== 201 && !existed) throw fail("Creating the tenant", tenant);
+  if (opts.first) {
+    const first = await signIn();
+    const tenant = await call("POST", "/api/tenants", { token: first, json: { Handle: TENANT, Name: "Client" } });
+    if (tenant.status === 409) throw new CliError("conflict", `Creating the tenant '${TENANT}' clashed with a domain already in use.`);
+    const existed = tenant.status === 400 && tenant.body.includes("A tenant with this handle already exists.");
+    if (tenant.status !== 200 && tenant.status !== 201 && !existed) throw fail("Creating the tenant", tenant);
+  }
 
   const token = await signIn(TENANT);
-  const applied = await call("POST", `/api/content-types/blueprints/${encodeURIComponent(kit.name)}`, { token, tenant: TENANT });
-  if (applied.status === 404) {
-    throw new CliError("not_found", `The stack does not know a kit called '${kit.name}'. If you passed a file, run barako down and barako up again so the stack can read it.`);
+  // The site kit first, because Press needs it, then the chosen kit.
+  for (const name of opts.first && kit.name !== BASE_KIT ? [BASE_KIT, kit.name] : [kit.name]) {
+    const applied = await call("POST", `/api/content-types/blueprints/${encodeURIComponent(name)}`, { token, tenant: TENANT });
+    if (applied.status === 200 || applied.status === 201) continue;
+    // Applying is all or nothing. Only core's "already exist" refusal means it was applied before.
+    if (applied.status === 409 && /already exists? in this tenant/.test(applied.body)) continue;
+    if (applied.status === 404) {
+      throw new CliError("not_found", `The stack does not know a kit called '${name}'. If you passed a file, run barako down and barako up again so the stack can read it.`);
+    }
+    const why = reasons(applied.body);
+    throw new CliError(applied.status === 409 ? "conflict" : "server", `Applying the kit '${name}' failed (HTTP ${applied.status}).${why ? ` ${why}` : ""}`);
   }
-  if (applied.status !== 200 && applied.status !== 201 && applied.status !== 409) throw fail(`Applying the kit '${kit.name}'`, applied);
 
   const keyPath = join(dir, KEY_FILE);
   if (existsSync(keyPath)) {
@@ -528,16 +626,41 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       const envPath = join(dir, ".env");
       // After the stack is up: the tenant, the kit and the key. Skipped when an earlier up did them.
       const finish = async (state: State, base: Record<string, unknown>) => {
+        const log = (l: string) => ctx.stdio?.log(l);
         const done = state.bootstrap;
-        const settled = done !== undefined && existsSync(join(dir, KEY_FILE)) && (!kit || kit.name === done.kit);
-        if (!settled) {
-          const use: Kit = kit ?? { name: DEFAULT_KIT };
-          if (use.file !== undefined) writeIfChanged(join(dir, "blueprints", `${use.name}.json`), use.file);
-          await bootstrap(deps, dir, use, (l) => ctx.stdio?.log(l));
-          state.bootstrap = { kit: use.name };
+        const keyPath = join(dir, KEY_FILE);
+        const hadKey = existsSync(keyPath);
+        const kitChanged = kit !== undefined && done !== undefined && (kit.name !== done.kit || (kit.hash !== undefined && kit.hash !== done.hash));
+        const notices: string[] = [];
+        let bootstrapped = false;
+        let needed = done === undefined || !hadKey || kitChanged;
+        if (!needed && !(await keyStillWorks(deps, dir))) {
+          // The key file is there but core does not know it, so make a new one.
+          unlinkSync(keyPath);
+          needed = true;
+        }
+        if (needed) {
+          const use: Kit = kit ?? { name: done?.kit ?? DEFAULT_KIT };
+          if (use.file !== undefined) {
+            const target = join(dir, "blueprints", `${use.name}.json`);
+            writeIfChanged(target, use.file);
+            // Core runs as another user in its container and must read the kit, which is not a secret.
+            chmodSync(target, 0o644);
+          }
+          if (done === undefined && hadKey) {
+            notices.push("An API key from an earlier barako up is in the stack folder. It is kept and not checked. If it fails, delete the api-key file and run barako up again. Keys made by barako up expire after 365 days.");
+          }
+          if (kitChanged && kit!.name === done!.kit) {
+            notices.push("The kit file changed since the last up. Applying a kit only adds types, so types that already exist keep their old fields.");
+          }
+          const out = await bootstrap(deps, dir, use, { first: done === undefined }, log);
+          bootstrapped = true;
+          if (out.keyCreated && hadKey) notices.push("Made a new API key because the old one was refused.");
+          state.bootstrap = { kit: use.name, ...(use.hash ? { hash: use.hash } : {}) };
           writeIfChanged(join(dir, "state.json"), JSON.stringify(state, null, 2) + "\n", 0o600);
         }
-        return { ...base, ...summary(dir, state) };
+        const merged = [typeof base.notice === "string" ? base.notice : undefined, ...notices].filter(Boolean).join(" ");
+        return { ...base, bootstrapped, ...(merged ? { notice: merged } : {}), ...summary(dir, state) };
       };
       if (!existsSync(envPath)) {
         if (prior || (await volumeExists(deps))) {
@@ -547,13 +670,14 @@ export function makeStackCommands(deps: StackDeps): Command[] {
         throw new CliError("conflict", `.env is missing a secret. ${BROKEN}`);
       }
 
-      const running = prior ? await runningCount(deps, dir, prior) : 0;
+      const upNow = prior ? await runningServices(deps, dir, prior) : [];
+      const running = upNow.length;
       if (prior && running > 0) {
         const changed = (wantPort !== undefined && wantPort !== prior.port) || (wantLatest && !prior.latest);
         if (changed) {
           throw new CliError("conflict", "The stack is running with other settings. Run barako down, then barako up with the new ones.");
         }
-        if (running >= SERVICES) {
+        if (SERVICE_LIST.every((n) => upNow.includes(n))) {
           const stale = filesDiffer(dir);
           return finish(prior, {
             alreadyRunning: true,
@@ -589,6 +713,11 @@ export function makeStackCommands(deps: StackDeps): Command[] {
         ...(state.latest ? ["--pull", "always"] : []),
       ]);
       if (r.code !== 0) throw failure("docker compose up failed", r, dir);
+      const after = await runningServices(deps, dir, state);
+      const missing = SERVICE_LIST.filter((n) => !after.includes(n));
+      if (missing.length > 0) {
+        throw new CliError("server", `docker compose up finished but these services are not running: ${missing.join(", ")}. Run docker compose logs for them in ${dir}, then barako up again.`);
+      }
       const notice = state.latest ? "Using the newest published images, not the versions pinned in this release." : undefined;
       return finish(state, { alreadyRunning: false, ...(notice ? { notice } : {}) });
     },
