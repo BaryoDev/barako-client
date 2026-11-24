@@ -1,4 +1,5 @@
 import { ContentStatus, type Content, type ListContentQuery } from "@baryodev/barako-client";
+import { getContentType, getEntry, listContentTypes, listEntries, withoutEtag } from "../operations";
 import { CliError } from "../output";
 import { commands, type Command } from "../registry";
 
@@ -39,7 +40,7 @@ const typesCommand: Command = {
   summary: "List the content types you can read.",
   args: [],
   async run({ client }) {
-    return client.contentTypes.readable();
+    return listContentTypes(client);
   },
 };
 
@@ -48,7 +49,7 @@ const schemaCommand: Command = {
   summary: "Show the fields of one content type.",
   args: [{ name: "type", kind: "positional", type: "string", required: true, description: "Content type name." }],
   async run({ client }, args) {
-    return client.contentTypes.get(str(args, "type")!);
+    return getContentType(client, str(args, "type")!);
   },
 };
 
@@ -71,13 +72,13 @@ const listCommand: Command = {
     if (search !== undefined) query.search = search;
 
     if (args.all !== true) {
-      return client.contents.list({ ...query, pageSize: limit });
+      return listEntries(client, { ...query, pageSize: limit });
     }
 
     const items: Content[] = [];
     let truncated = false;
     for (let page = 1; ; page++) {
-      const res = await client.contents.list({ ...query, page, pageSize: ALL_PAGE_SIZE });
+      const res = await listEntries(client, { ...query, page, pageSize: ALL_PAGE_SIZE });
       const got = res?.items ?? [];
       items.push(...got);
       if (items.length >= ALL_CAP) {
@@ -112,18 +113,14 @@ const getCommand: Command = {
     if (id === undefined && slug === undefined) {
       throw new CliError("usage", "Give an id or --slug.");
     }
-    let entry: Content & { etag?: string };
     if (slug !== undefined) {
       const i = slug.indexOf("/");
       const type = slug.slice(0, i);
       const rest = slug.slice(i + 1);
       if (i < 1 || rest === "") throw new CliError("usage", "--slug must be type/slug.");
-      entry = await client.contents.bySlug(type, rest);
-    } else {
-      entry = await client.contents.get(id!);
+      return withoutEtag(await client.contents.bySlug(type, rest));
     }
-    const { etag: _etag, ...out } = entry;
-    return out;
+    return getEntry(client, id!);
   },
 };
 
