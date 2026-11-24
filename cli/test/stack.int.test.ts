@@ -289,7 +289,10 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     const doc = await headers("client.localhost", `/blog/${slug}`);
     const policies = [
       ...doc.head.split("\n").filter((l) => /^content-security-policy:/i.test(l.trim())).map((l) => l.slice(l.indexOf(":") + 1)),
-      ...[...page.body.matchAll(/<meta[^>]*http-equiv="content-security-policy"[^>]*content="([^"]*)"/gi)].map((m) => m[1]!),
+      ...[...page.body.matchAll(/<meta\b[^>]*>/gi)]
+        .map((m) => m[0])
+        .filter((tag) => /\shttp-equiv="content-security-policy"/i.test(tag))
+        .map((tag) => /\scontent="([^"]*)"/i.exec(tag)?.[1] ?? ""),
     ];
     for (const policy of policies) {
       const directives = new Map(policy.split(";").map((d) => d.trim().split(/\s+/)).filter((d) => d[0]).map((d) => [d[0]!.toLowerCase(), d.slice(1)] as const));
