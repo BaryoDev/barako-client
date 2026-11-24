@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { applyOf, mcpSession, resultData, toolCall } from "./mcp-session";
@@ -69,6 +70,54 @@ async function curl(host: string, path: string): Promise<{ status: number; redir
   const at = r.stdout.lastIndexOf(marker);
   const [status = "0", redirect = ""] = r.stdout.slice(at + marker.length).split(" ");
   return { status: Number(status), redirect, body: r.stdout.slice(0, at) };
+}
+
+/** The status, the content type and the response headers of one request, with the body left out. */
+async function headers(host: string, path: string): Promise<{ status: number; type: string; size: number; head: string }> {
+  const marker = "\n__STATUS__";
+  const r = await run("curl", [
+    "-s", "--max-time", "20", "-o", "/dev/null", "-D", "-",
+    "--resolve", `${host}:${PORT}:127.0.0.1`,
+    "-w", `${marker}%{http_code} %{size_download} %{content_type}`,
+    `http://${host}:${PORT}${path}`,
+  ]);
+  const at = r.stdout.lastIndexOf(marker);
+  const [status = "0", size = "0", type = ""] = r.stdout.slice(at + marker.length).split(" ");
+  return { status: Number(status), size: Number(size), type, head: r.stdout.slice(0, at) };
+}
+
+/** A 1x1 PNG, built here so the test carries no fixture file. */
+function tinyPng(): Buffer {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (b: Buffer) => {
+    let c = 0xffffffff;
+    for (const x of b) c = crcTable[(c ^ x) & 0xff]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const sum = Buffer.alloc(4);
+    sum.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, sum]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // RGB
+  const row = Buffer.from([0, 0x2f, 0x6d, 0xb5]); // filter byte, then one pixel
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(row)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
 describe.skipIf(!ON)("barako up against the published images", () => {
@@ -174,6 +223,65 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     expect(page.redirect).toBe("");
     expect(page.body).toContain(title);
   }, 180_000);
+
+  // The kit's post type holds its cover as a url field, which core only takes absolute, so the entry
+  // names the file by the address Caddy serves on the site's own origin.
+  it("an uploaded image shows on the Press page from the same origin, under its CSP", async () => {
+    const origin = `http://client.localhost:${PORT}`;
+    const form = new FormData();
+    form.append("file", new Blob([new Uint8Array(tinyPng())], { type: "image/png" }), "stack-check.png");
+    form.append("isPublic", "true");
+    const up = await fetch(`${API}/api/files`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form });
+    const upText = await up.text();
+    expect(up.status, mask(upText).slice(0, 300)).toBe(201);
+    const fileId = JSON.parse(upText).id as string;
+    expect(fileId).toMatch(/^[0-9a-f-]{36}$/);
+    const filePath = `/api/public/files/${fileId}`;
+
+    const title = `Image check ${randomBytes(4).toString("hex")}`;
+    const slug = `image-check-${randomBytes(3).toString("hex")}`;
+    const replies = await mcpSession(API, key, ["--allow-writes"], [
+      () => toolCall(1, "plan_create_entry", { contentType: "post", data: { Title: title, Slug: slug, Body: "Has a cover image.", CoverImage: `${origin}${filePath}`, CoverImageAlt: "stack check" }, publish: true }),
+      applyOf("apply_plan", 2, 0),
+    ]);
+    expect(replies[0].result.isError, mask(JSON.stringify(replies[0])).slice(0, 300)).toBe(false);
+    expect(replies[1].result.isError, mask(JSON.stringify(replies[1])).slice(0, 300)).toBe(false);
+
+    // Press caches pages, so give it time to pick the entry up.
+    let page = { status: 0, redirect: "", body: "" };
+    for (let i = 0; i < 45; i++) {
+      page = await curl("client.localhost", `/blog/${slug}`);
+      if (page.status === 200 && page.body.includes(title)) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    expect(page.status).toBe(200);
+    expect(page.body).toContain(title);
+
+    // The image the page draws for this file: relative, or on the page's own origin.
+    const srcs = [...page.body.matchAll(/<img\b[^>]*?\ssrc="([^"]*)"/g)].map((m) => m[1]!.replaceAll("&amp;", "&"));
+    const src = srcs.find((s) => s.includes(fileId));
+    expect(src, `img srcs: ${srcs.join(", ")}`).toBeTruthy();
+    const url = new URL(src!, `${origin}/`);
+    expect(url.origin).toBe(origin);
+    expect(url.pathname).toMatch(/^\/api\/public\/files\//);
+
+    // The same host serves it as an image.
+    const img = await headers("client.localhost", url.pathname + url.search);
+    expect(img.status, img.head).toBe(200);
+    expect(img.type).toMatch(/^image\//);
+    expect(img.size).toBeGreaterThan(0);
+
+    // The page's CSP, from the header or a meta tag, lets the same origin draw images.
+    const doc = await headers("client.localhost", `/blog/${slug}`);
+    const policies = [
+      ...doc.head.split("\n").filter((l) => /^content-security-policy(-report-only)?:/i.test(l)).map((l) => l.slice(l.indexOf(":") + 1)),
+      ...[...page.body.matchAll(/<meta[^>]*http-equiv="content-security-policy"[^>]*content="([^"]*)"/gi)].map((m) => m[1]!),
+    ];
+    for (const policy of policies) {
+      const imgSrc = policy.split(";").map((d) => d.trim()).find((d) => d.startsWith("img-src"));
+      if (imgSrc) expect(imgSrc, "img-src").toContain("'self'");
+    }
+  }, 120_000);
 
   it("reset removes the volumes", async () => {
     const r = await barako(["reset", "--yes"], 180_000);
