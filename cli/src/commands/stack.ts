@@ -375,8 +375,12 @@ async function compose(
 
 /** A compose failure as a message: the last lines of stderr with every .env value removed. Never the environment. */
 function failure(what: string, r: DockerResult, dir: string): CliError {
+  return new CliError("server", `${what} (docker exit ${r.code}).\n${stderrTail(r, dir)}`.trim());
+}
+
+function stderrTail(r: DockerResult, dir: string): string {
   const tail = r.stderr.trim().split("\n").slice(-15).join("\n");
-  return new CliError("server", `${what} (docker exit ${r.code}).\n${scrubText(tail, readSecrets(dir))}`.trim());
+  return scrubText(tail, readSecrets(dir));
 }
 
 async function requireDocker(deps: StackDeps): Promise<void> {
@@ -412,66 +416,91 @@ async function runningServices(deps: StackDeps, dir: string, state: State): Prom
 interface Box {
   status: string;
   restarts: number;
+  /** When Docker last started it, as Docker's clock reads it. NaN when unreadable. */
+  started: number;
   name: string;
 }
 
-/** Each service's container: its state, how often Docker restarted it, and its name for docker logs. */
-async function containerStates(deps: StackDeps, dir: string, state: State): Promise<Map<string, Box>> {
+interface Sample {
+  boxes: Map<string, Box>;
+  at: number;
+  /** Set when docker inspect failed, scrubbed of every .env value. */
+  error?: string;
+}
+
+/**
+ * Each service's container: its state, how often Docker restarted it, when it last started, and its
+ * name for docker logs. A failed inspect is returned, not thrown: a container can go between ps and
+ * inspect while it restarts.
+ */
+async function containerStates(deps: StackDeps, dir: string, state: State): Promise<Sample> {
   const ps = await compose(deps, dir, state, ["ps", "--all", "--quiet"]);
   if (ps.code !== 0) throw failure("docker compose ps failed", ps, dir);
   const ids = ps.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
-  const out = new Map<string, Box>();
-  if (ids.length === 0) return out;
+  const boxes = new Map<string, Box>();
+  if (ids.length === 0) return { boxes, at: deps.now() };
   // Only these fields. The rest of inspect holds the environment, and with it the secrets.
-  const r = await deps.docker(
-    ["inspect", "--format", '{{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} {{.RestartCount}} {{.Name}}', ...ids],
-    {},
-  );
-  if (r.code !== 0) throw failure("docker inspect failed", r, dir);
+  const r = await deps.docker(["inspect", "--format", INSPECT_FORMAT, ...ids], {});
+  const at = deps.now();
+  if (r.code !== 0) return { boxes, at, error: `docker inspect failed (docker exit ${r.code}).\n${stderrTail(r, dir)}`.trim() };
   for (const line of r.stdout.split("\n")) {
-    const [service, status, count, name] = line.trim().split(/\s+/);
+    const [service, status, count, started, name] = line.trim().split(/\s+/);
     if (!service || !status) continue;
-    out.set(service, { status, restarts: Number(count) || 0, name: (name ?? "").replace(/^\//, "") });
+    boxes.set(service, { status, restarts: Number(count) || 0, started: Date.parse(started ?? ""), name: (name ?? "").replace(/^\//, "") });
   }
-  return out;
+  return { boxes, at };
 }
 
+const INSPECT_FORMAT = '{{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} {{.RestartCount}} {{.State.StartedAt}} {{.Name}}';
 // Docker resets its restart backoff once a container has run 10 seconds, so up uses the same bar.
 const STEADY_MS = 10_000;
 const SETTLE_MS = 60_000;
+
+/** True when every service runs and Docker started each one at least STEADY_MS ago. */
+function settled(s: Sample): boolean {
+  return !s.error && SERVICE_LIST.every((n) => {
+    const b = s.boxes.get(n);
+    return b?.status === "running" && s.at - b.started >= STEADY_MS;
+  });
+}
 
 /**
  * Waits until every service has run for STEADY_MS with no restart, measured from `base`. compose --wait
  * takes "running" as done for a service with no healthcheck, which a container that exits at start
  * passes between restarts, so up would return with a service down and the site behind it a 502.
  */
-async function waitSteady(deps: StackDeps, dir: string, state: State, base: { boxes: Map<string, Box>; at: number }): Promise<void> {
+async function waitSteady(deps: StackDeps, dir: string, state: State, base: Sample): Promise<void> {
   const deadline = deps.now() + SETTLE_MS;
   let ref = base;
   let last: string[] = [];
+  let seen = base.boxes;
   for (;;) {
-    const boxes = await containerStates(deps, dir, state);
-    const at = deps.now();
-    const moved = SERVICE_LIST.filter((n) => {
-      const now = boxes.get(n);
-      const was = ref.boxes.get(n);
-      return now?.status !== "running" || was?.status !== "running" || now.restarts !== was.restarts;
-    });
+    const sample = await containerStates(deps, dir, state);
+    const moved = sample.error
+      ? [...SERVICE_LIST]
+      : SERVICE_LIST.filter((n) => {
+          const now = sample.boxes.get(n);
+          const was = ref.boxes.get(n);
+          return now?.status !== "running" || was?.status !== "running" || now.restarts !== was.restarts || !Object.is(now.started, was.started);
+        });
+    if (!sample.error) seen = sample.boxes;
     if (moved.length > 0) {
-      ref = { boxes, at };
-      last = moved;
-    } else if (at - ref.at >= STEADY_MS) {
+      ref = sample;
+      if (!sample.error) last = moved;
+    } else if (sample.at - ref.at >= STEADY_MS) {
       return;
     }
-    if (at >= deadline) {
+    if (sample.at >= deadline) {
+      const why = sample.error ? `\n${sample.error}` : "";
+      if (last.length === 0) throw new CliError("server", `Could not check that the services stay running. Run barako up again.${why}`);
       const what = last.map((n) => {
-        const b = boxes.get(n);
+        const b = seen.get(n);
         return b ? `${n} (${b.status}, restarted ${b.restarts} times)` : `${n} (no container)`;
       });
-      const logs = last.map((n) => `docker logs ${boxes.get(n)?.name || `${PROJECT}-${n}-1`}`).join(", ");
+      const logs = last.map((n) => `docker logs ${seen.get(n)?.name || `${PROJECT}-${n}-1`}`).join(", ");
       throw new CliError(
         "server",
-        `These services did not stay running after docker compose up: ${what.join(", ")}. See why with ${logs}, then run barako up again.`,
+        `These services did not stay running: ${what.join(", ")}. See why with ${logs}, then run barako up again.${why}`,
       );
     }
     await deps.sleep(1000);
@@ -767,10 +796,14 @@ export function makeStackCommands(deps: StackDeps): Command[] {
         }
         if (SERVICE_LIST.every((n) => upNow.includes(n))) {
           const stale = filesDiffer(dir);
-          return finish(prior, {
+          // ps can catch a looping service in a running moment, so a service that started lately is watched.
+          const base = await containerStates(deps, dir, prior);
+          const out = await finish(prior, {
             alreadyRunning: true,
             ...(stale ? { notice: "The stack files in this release differ from the running stack. Run barako down, then barako up, to apply them." } : {}),
           });
+          if (!settled(base)) await waitSteady(deps, dir, prior, base);
+          return out;
         }
       }
 
@@ -808,7 +841,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
         throw new CliError("server", `docker compose up finished but these services are not running: ${missing.join(", ")}. See why with ${logs}, then run barako up again.`);
       }
       // Sampled before the bootstrap, so the time it takes counts toward the steady window.
-      const base = { boxes: await containerStates(deps, dir, state), at: deps.now() };
+      const base = await containerStates(deps, dir, state);
       const notice = state.latest ? "Using the newest published images, not the versions pinned in this release." : undefined;
       const out = await finish(state, { alreadyRunning: false, ...(notice ? { notice } : {}) });
       await waitSteady(deps, dir, state, base);

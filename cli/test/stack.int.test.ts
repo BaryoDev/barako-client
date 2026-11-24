@@ -87,7 +87,8 @@ describe.skipIf(!ON)("barako up against the published images", () => {
         // No file yet.
       }
     }
-    return out;
+    // Also a key that is in neither file any more, for example one replaced after core refused it.
+    return out.replace(/bcms_[A-Za-z0-9_-]+/g, "bcms_***");
   };
   afterEach((ctx) => {
     if (ctx.task.result?.state === "fail") failed = true;

@@ -54,10 +54,17 @@ interface FakeBox {
   service: string;
   status: string;
   restarts: number;
+  /** When Docker last started it, on the fake clock. */
+  started: number;
 }
 /** The containers docker inspect reports at a time on the fake clock. */
 let boxes: (at: number) => FakeBox[];
-const steady = (): FakeBox[] => SERVICE_NAMES.map((service) => ({ service, status: "running", restarts: 0 }));
+const steady = (): FakeBox[] => SERVICE_NAMES.map((service) => ({ service, status: "running", restarts: 0, started: -60_000 }));
+/** The stderr for the nth inspect call (from 1) that fails, or undefined when it answers. */
+let inspectFails: (n: number) => string | undefined;
+let inspectCount: number;
+/** Puts empty lines between and around the inspect rows. */
+let inspectBlank: boolean;
 
 const FAKE_KEY = "fake-api-key-for-tests";
 const FAKE_JWT = "fake-jwt-for-tests";
@@ -90,9 +97,13 @@ function fakeDeps(): StackDeps {
       }
       if (args.includes("ps") && args.includes("--quiet")) return ok({ stdout: boxes(clock).map((b) => `id-${b.service}`).join("\n") });
       if (args[0] === "inspect") {
+        inspectCount += 1;
+        const err = inspectFails(inspectCount);
+        if (err !== undefined) return ok({ code: 1, stderr: err });
         const byId = new Map(boxes(clock).map((b) => [`id-${b.service}`, b]));
         const rows = args.filter((a) => byId.has(a)).map((id) => byId.get(id)!);
-        return ok({ stdout: rows.map((b) => `${b.service} ${b.status} ${b.restarts} /barako-${b.service}-1`).join("\n") });
+        const lines = rows.map((b) => `${b.service} ${b.status} ${b.restarts} ${new Date(b.started).toISOString()} /barako-${b.service}-1`);
+        return ok({ stdout: inspectBlank ? `\n${lines.join("\n\n")}\n  \n` : lines.join("\n") });
       }
       if (args.includes("up")) {
         const r = ok(upReply);
@@ -158,6 +169,9 @@ beforeEach(() => {
   afterUp = false;
   runningAfterUp = 5;
   boxes = steady;
+  inspectFails = () => undefined;
+  inspectCount = 0;
+  inspectBlank = false;
   spawnMock.mockReset();
 });
 
@@ -1178,7 +1192,12 @@ describe("services after up", () => {
 describe("services staying up", () => {
   const inspects = () => calls.filter((c) => c.args[0] === "inspect");
   const flapping = (service: string, every: number) => (at: number) =>
-    steady().map((b) => (b.service === service ? { ...b, status: at % every < 1000 ? "running" : "restarting", restarts: Math.floor(at / every) } : b));
+    steady().map((b) =>
+      b.service === service
+        ? { ...b, status: at % every < 1000 ? "running" : "restarting", restarts: Math.floor(at / every), started: Math.floor(at / every) * every }
+        : b,
+    );
+  const firstSecret = () => readFileSync(join(dir(), ".env"), "utf8").split("\n")[0]!.split("=")[1]!;
 
   it("returns once every service has run 10 seconds with no restart", async () => {
     const out = await cmd("up")({});
@@ -1187,12 +1206,12 @@ describe("services staying up", () => {
     expect(clock).toBeLessThan(12_000);
   });
 
-  it("asks inspect for the service, state, restart count and name only, never the environment", async () => {
+  it("asks inspect for the service, state, restart count, start time and name only, never the environment", async () => {
     await cmd("up")({});
     expect(inspects().length).toBeGreaterThan(0);
     for (const c of inspects()) {
       expect(c.args[1]).toBe("--format");
-      expect(c.args[2]).toBe('{{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} {{.RestartCount}} {{.Name}}');
+      expect(c.args[2]).toBe('{{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} {{.RestartCount}} {{.State.StartedAt}} {{.Name}}');
     }
   });
 
@@ -1200,7 +1219,7 @@ describe("services staying up", () => {
     boxes = flapping("console", 3000);
     const e = await fails(() => cmd("up")({}));
     expect(e.code).toBe("server");
-    expect(e.message).toMatch(/did not stay running after docker compose up: console \((running|restarting), restarted \d+ times\)\./);
+    expect(e.message).toMatch(/did not stay running: console \((running|restarting), restarted \d+ times\)\./);
     expect(e.message).toContain("docker logs barako-console-1");
     for (const other of ["postgres", "api", "site", "caddy"]) expect(e.message).not.toContain(other);
   });
@@ -1233,15 +1252,71 @@ describe("services staying up", () => {
     expect(clock).toBe(12_000);
   });
 
-  it("a second up on a running stack does not wait", async () => {
+  it("a second up on a running stack does not wait when every service started 10 seconds ago or more", async () => {
     await cmd("up")({});
     calls = [];
     running = 5;
     const before = clock;
     const out = await cmd("up")({});
     expect(out.alreadyRunning).toBe(true);
-    expect(inspects()).toEqual([]);
+    expect(inspects()).toHaveLength(1);
     expect(clock).toBe(before);
+  });
+
+  it("a second up fails when ps sees all five but the console started 2 seconds ago and keeps restarting", async () => {
+    await cmd("up")({});
+    running = 5;
+    boxes = (at) => steady().map((b) => (b.service === "console" ? { ...b, restarts: Math.floor(at / 3000), started: at - 2000 } : b));
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("server");
+    expect(e.message).toMatch(/did not stay running: console \(running, restarted \d+ times\)\./);
+    for (const other of ["postgres", "api", "site", "caddy"]) expect(e.message).not.toContain(other);
+  });
+
+  it("after a first up fails on a looping console, a second up that catches it running fails too", async () => {
+    boxes = flapping("console", 3000);
+    expect((await fails(() => cmd("up")({}))).message).toContain("did not stay running: console");
+    // The first up got as far as the key, so this one takes the already running path.
+    expect(existsSync(join(dir(), "api-key"))).toBe(true);
+    running = 5;
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("did not stay running: console");
+  });
+
+  it("an inspect that fails once counts as movement, and a steady stack then passes", async () => {
+    inspectFails = (n) => (n === 3 ? "Error: No such object: id-console" : undefined);
+    const out = await cmd("up")({});
+    expect(out.alreadyRunning).toBe(false);
+    // The third call failed at 1 second and the next good sample, at 2 seconds, starts the 10.
+    expect(clock).toBeGreaterThanOrEqual(12_000);
+  });
+
+  it("an inspect that keeps failing ends at 60 seconds with its error, scrubbed of .env values", async () => {
+    inspectFails = () => `Error: No such object: ${firstSecret()}`;
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("server");
+    expect(e.message).toContain("Could not check that the services stay running");
+    expect(e.message).toContain("docker inspect failed (docker exit 1)");
+    expect(e.message).toContain("No such object");
+    expect(e.message).not.toContain(firstSecret());
+    expect(clock).toBeGreaterThanOrEqual(60_000);
+    expect(clock).toBeLessThan(62_000);
+  });
+
+  it("a service missing from the inspect rows fails at 60 seconds and is named", async () => {
+    boxes = () => steady().filter((b) => b.service !== "caddy");
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("did not stay running: caddy (no container)");
+    expect(e.message).toContain("docker logs barako-caddy-1");
+    expect(clock).toBeGreaterThanOrEqual(60_000);
+    expect(clock).toBeLessThan(62_000);
+  });
+
+  it("empty lines in the inspect output are ignored", async () => {
+    inspectBlank = true;
+    const out = await cmd("up")({});
+    expect(out.alreadyRunning).toBe(false);
+    expect(clock).toBeLessThan(12_000);
   });
 });
 
