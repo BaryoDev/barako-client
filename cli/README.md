@@ -156,7 +156,7 @@ Everything lives in `~/.barako/stack`: the compose files, `state.json`, `.env` (
 - `barako reset` also deletes the database and the key. The next `up` starts from nothing. `.env` stays, so the admin password stays.
 - `--latest` uses the newest published core, Press and Brew images instead of the pinned ones. It is not tested against this release.
 
-Brew keeps its refresh cookie `Secure` because core does that outside the Development environment. Chrome and Firefox treat `http://*.localhost` as a secure context and are expected to store it. Safari is not expected to, so console sign-in there may fail. None of the three has been checked against this stack.
+Brew keeps its refresh cookie `Secure` because core does that outside the Development environment. Chrome treats `http://*.localhost` as a secure context, so it is expected to keep the cookie. Firefox and Safari are not checked yet, and console sign-in may fail there. None of the three has been tried against this stack.
 
 ## MCP server
 
