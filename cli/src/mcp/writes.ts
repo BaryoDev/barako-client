@@ -346,7 +346,12 @@ function applyTool(name: string, title: string, description: string, destructive
       if (typeof a.token !== "string" || !TOKEN_PATTERN.test(a.token)) {
         throw new ArgumentError('"token" must be the token the plan returned.');
       }
-      if (!(listed as readonly unknown[]).includes(a.action)) throw new ArgumentError('"action" must be the action the plan returned.');
+      // A wrong action is refused here, before the plan is looked up, so the plan survives.
+      if (!(listed as readonly unknown[]).includes(a.action)) {
+        throw new ArgumentError(
+          '"action" is not one this tool applies. Rollback and erase go to apply_destructive_plan, the others to apply_plan.',
+        );
+      }
       return { token: a.token, action: a.action, target: checkId(a.target, "target") };
     },
     async run(client, a, ctx) {

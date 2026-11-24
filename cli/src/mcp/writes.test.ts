@@ -277,19 +277,25 @@ describe("mcp write tools: plan and apply", () => {
     const s = await converse(
       [
         () => call(1, "plan_erase_entry", { id: "a" }),
+        // The plan's own action on the wrong tool is refused before the plan is looked up.
         apply(2, 0, "apply_plan"),
         () => call(3, "plan_update_entry", { id: "a", data: { Title: "New" } }),
         apply(4, 2, "apply_destructive_plan"),
-        // Both plans are gone now.
-        apply(5, 0, "apply_destructive_plan"),
+        // An action the tool lists but the plan does not have reaches the plan, which is then removed.
+        apply(5, 0, "apply_plan", { action: "update_entry" }),
+        apply(6, 0, "apply_destructive_plan"),
+        apply(7, 2, "apply_plan"),
       ],
       { client, destructive: true },
     );
-    expect(errorOf(s.replies[1]!).message).toContain("other apply tool");
-    expect(errorOf(s.replies[3]!).message).toContain("other apply tool");
-    expect(errorOf(s.replies[4]!).message).toContain("no such plan");
+    expect(errorOf(s.replies[1]!).message).toContain("apply_destructive_plan");
+    expect(errorOf(s.replies[3]!).message).toContain("apply_destructive_plan");
+    expect(errorOf(s.replies[4]!).message).toContain("other apply tool");
+    expect(errorOf(s.replies[5]!).message).toContain("no such plan");
+    expect(s.replies[6]!.result.isError).toBe(false);
     expect(contents.erase).not.toHaveBeenCalled();
-    expect(contents.update).toHaveBeenCalledTimes(1);
+    // One dry run at plan time and one apply.
+    expect(contents.update).toHaveBeenCalledTimes(2);
   });
 
   it("apply sends exactly the planned update with If-Match and version", async () => {
@@ -771,7 +777,7 @@ describe("mcp write tools: thin answers, limits and token handling", () => {
     );
     expect(s.replies[1]!.result.isError).toBe(true);
     expect(errorOf(s.replies[1]!).code).toBe("usage");
-    expect(errorOf(s.replies[1]!).message).toBe('"action" must be the action the plan returned.');
+    expect(errorOf(s.replies[1]!).message).toContain('"action" is not one this tool applies.');
     expect(s.replies[2]!.result.isError).toBe(false);
     expect(contents.erase.mock.calls).toEqual([["a"]]);
   });
