@@ -207,6 +207,17 @@ describe("per field settings", () => {
     expect(optional({ type: "string" })).not.toHaveProperty("default");
   });
 
+  it("a required field with a default stays required and says only create fills it", () => {
+    const note = "Create fills this from its default when it is left out. Update does not, so an update must send it.";
+    const schema = dataSchemaOf(typeOf(field({ name: "A", type: "string", isRequired: true, defaultValue: "x" }))) as any;
+    expect(schema.required).toEqual(["A"]);
+    expect(schema.properties.A.default).toBe("x");
+    expect(schema.properties.A.description).toBe(note);
+    expect(required({ type: "int", defaultValue: 3 }).description).toBe(`A whole number that fits 64 bits, or text holding one. ${note}`);
+    expect(optional({ type: "string", defaultValue: "x" })).not.toHaveProperty("description");
+    expect(required({ type: "token", defaultValue: "x" }).description).not.toContain("Create fills");
+  });
+
   it("an optional field also takes null, a required one does not", () => {
     expect(optional({ type: "string" }).type).toEqual(["string", "null"]);
     expect(optional({ type: "int" }).type).toEqual(["integer", "string", "null"]);
@@ -285,12 +296,15 @@ describe("per field settings", () => {
 });
 
 describe("top level", () => {
-  it("has the 2020-12 dialect, type object and additionalProperties false", () => {
+  it("has the 2020-12 dialect and type object, and allows keys it does not list", () => {
     const schema = dataSchemaOf(typeOf(field({ name: "a", type: "string" }))) as any;
     expect(schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
     expect(schema.type).toBe("object");
-    expect(schema.additionalProperties).toBe(false);
+    // The route leaves out fields the caller may not read, and core accepts some of them on a write.
+    expect(schema).not.toHaveProperty("additionalProperties");
     expect(Object.keys(schema.properties)).toEqual(["a"]);
+    expect(schema.description).toContain("may not read is not listed");
+    expect(schema.description).toContain("ignoring case");
   });
 
   it("an empty or odd field list gives an empty properties object", () => {

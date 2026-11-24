@@ -47,7 +47,10 @@ const INLINE_IMAGE_MAX_URL = Math.floor((64 * 1024 + 2) / 3) * 4 + "data:image/j
 const UNKNOWN_TYPE_NOTE =
   "This version of the barako CLI does not know this field type. The API checks the value.";
 const TOP_NOTE =
-  "The data of one entry. The API matches field names ignoring case and checks every value, so this schema describes and does not replace that check.";
+  "The data of one entry, as the caller sees the type. A field the caller may not read is not listed, and the API can still require it. Send field names as listed; the API also matches them ignoring case. The API checks every value, so this schema describes and does not replace that check.";
+// Core fills a missing field from its default on create, and not on update, rollback or a workflow
+// transition. One schema serves every write, so the field stays required and says so.
+const DEFAULT_NOTE = "Create fills this from its default when it is left out. Update does not, so an update must send it.";
 
 interface Context {
   field: ReadableField;
@@ -244,7 +247,12 @@ function fragmentOf(field: ReadableField): Schema {
   const declared = canonical === "json" && isObject(field.jsonSchema);
   if (build && !serverSets && !field.isRequired) out = declared ? { anyOf: [out, { type: "null" }] } : orNull(out);
   if (serverSets) out.readOnly = true;
-  if (field.defaultValue !== undefined && field.defaultValue !== null) out.default = copyJson(field.defaultValue);
+  if (field.defaultValue !== undefined && field.defaultValue !== null) {
+    out.default = copyJson(field.defaultValue);
+    if (field.isRequired === true && !serverSets) {
+      out.description = typeof out.description === "string" ? `${out.description} ${DEFAULT_NOTE}` : DEFAULT_NOTE;
+    }
+  }
   if (isObject(field.validationRules) && Object.keys(field.validationRules).length > 0) {
     out["x-validationRules"] = copyJson(field.validationRules);
   }
@@ -268,6 +276,7 @@ export function dataSchemaOf(type: ReadableContentType): Schema {
     description: TOP_NOTE,
     properties: Object.fromEntries(fields.map((f) => [f.name, fragmentOf(f)])),
     ...(required.length > 0 ? { required } : {}),
-    additionalProperties: false,
+    // No additionalProperties: false. The route lists only the fields this caller may read, and core
+    // accepts a write that names a field it left out, so an unlisted key is not always wrong.
   };
 }
