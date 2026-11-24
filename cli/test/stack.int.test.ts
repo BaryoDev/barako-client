@@ -35,8 +35,27 @@ function run(file: string, args: string[], env: Record<string, string | undefine
   });
 }
 
-const barako = (args: string[], timeout?: number) =>
-  run(process.execPath, [MAIN, ...args], { HOME: home, DOCKER_CONFIG: process.env.DOCKER_CONFIG ?? join(homedir(), ".docker") }, timeout);
+const DOCKER_CONFIG = process.env.DOCKER_CONFIG ?? join(homedir(), ".docker");
+
+const barako = (args: string[], timeout?: number) => run(process.execPath, [MAIN, ...args], { HOME: home, DOCKER_CONFIG }, timeout);
+
+/**
+ * The stack's containers by their compose label, so this works without the compose file and its
+ * environment. Only these inspect fields: the rest holds the environment, and with it the secrets.
+ */
+async function containers(): Promise<{ id: string; line: string }[]> {
+  const ids = await run("docker", ["ps", "-aq", "--filter", "label=com.docker.compose.project=barako"], { DOCKER_CONFIG });
+  const out: { id: string; line: string }[] = [];
+  for (const id of ids.stdout.split("\n").map((l) => l.trim()).filter(Boolean)) {
+    const r = await run("docker", [
+      "inspect", "--format",
+      '{{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}}',
+      id,
+    ], { DOCKER_CONFIG });
+    out.push({ id, line: (r.code === 0 ? r.stdout : r.stderr).trim() });
+  }
+  return out;
+}
 
 /** The status line and the redirect target of one request, with no redirect followed. */
 async function curl(host: string, path: string): Promise<{ status: number; redirect: string; body: string }> {
@@ -79,14 +98,18 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     stackDir = join(home, ".barako", "stack");
   });
 
+  const printContainers = async () => {
+    const boxes = await containers();
+    console.log(`containers (service, state, restarts, started)\n${mask(boxes.map((b) => b.line).join("\n") || "none")}`);
+    return boxes;
+  };
+
   afterAll(async () => {
-    // When a test failed, show what the services said before they are removed. Compose masks the values.
+    // When a test failed, show what the services said before they are removed.
     if (failed) {
-      for (const args of [["ps", "-a"], ["logs", "--no-color", "--tail", "60", "api", "site", "console", "caddy"]]) {
-        const r = await run("docker", ["compose", "-p", "barako", "-f", join(stackDir, "compose.yml"), "--env-file", join(stackDir, ".env"), ...args], {
-          DOCKER_CONFIG: process.env.DOCKER_CONFIG ?? join(homedir(), ".docker"),
-        }, 60_000);
-        console.log(`docker compose ${args[0]}\n${mask(r.stdout + r.stderr)}`);
+      for (const b of await printContainers()) {
+        const r = await run("docker", ["logs", "--tail", "200", b.id], { DOCKER_CONFIG }, 60_000);
+        console.log(`docker logs ${b.line.split(" ")[0]}\n${mask(r.stdout + r.stderr)}`);
       }
     }
     // Always remove the containers and the volume, also after a failure.
@@ -96,7 +119,9 @@ describe.skipIf(!ON)("barako up against the published images", () => {
 
   it("up starts the stack and sets it up", async () => {
     const r = await barako(["up", "--port", String(PORT)], 15 * 60_000);
-    expect(r.code, r.stderr).toBe(0);
+    expect(r.code, mask(r.stderr)).toBe(0);
+    // Every time, so a restart count that grows before the next test shows in a passing run too.
+    await printContainers();
     const out = JSON.parse(r.stdout).result;
     expect(out.alreadyRunning).toBe(false);
     expect(out.urls.site).toBe(`http://client.localhost:${PORT}`);
@@ -108,14 +133,15 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     expect(out.mcp).toContain("barako mcp");
   }, 16 * 60_000);
 
+  // The test timeout is longer than the barako call, so a slow up fails with its own output.
   it("a second up changes nothing and keeps the key", async () => {
     const r = await barako(["up", "--port", String(PORT)], 120_000);
-    expect(r.code, r.stderr).toBe(0);
+    expect(r.code, mask(r.stderr)).toBe(0);
     const out = JSON.parse(r.stdout).result;
-    expect(out.alreadyRunning).toBe(true);
+    expect(out.alreadyRunning, mask(r.stderr)).toBe(true);
     expect(out.bootstrapped).toBe(false);
     expect(readFileSync(join(stackDir, "api-key"), "utf8").trim()).toBe(key);
-  });
+  }, 150_000);
 
   it("health on the console and API hosts answers from core, with no redirect to https", async () => {
     for (const host of ["admin.localhost", "api.localhost"]) {
