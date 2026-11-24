@@ -90,7 +90,8 @@ export const TOOLS: readonly Tool[] = [
   {
     name: "get_content_type",
     title: "Get a content type",
-    description: "Show the fields of one content type, by its name. Same as `barako schema <name>`.",
+    description:
+      "Show the fields of one content type, by its name. Same as `barako schema <name>`. The result has `dataSchema`, a JSON Schema for the data of an entry of the type. The API still checks every value.",
     inputSchema: {
       type: "object",
       properties: { name: { type: "string", description: "The content type name, as returned by list_content_types." } },
