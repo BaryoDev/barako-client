@@ -219,6 +219,15 @@ describe.skipIf(!ON)("barako up against the published images", () => {
     }
   });
 
+  // The console runs read-only, so its entrypoint writes this file into the copy on its tmpfs. A start that
+  // could not write it would serve the build's address or none.
+  it("the console serves env-config.js with the API address it was started with", async () => {
+    const r = await curl("admin.localhost", "/env-config.js");
+    expect(r.status).toBe(200);
+    expect(r.body).toContain("window._env_");
+    expect(r.body).toContain(`http://admin.localhost:${PORT}`);
+  });
+
   it("the new key creates and publishes an entry through barako mcp", async () => {
     const title = `Stack check ${randomBytes(4).toString("hex")}`;
     const replies = await mcpSession(API, key, ["--allow-writes"], [

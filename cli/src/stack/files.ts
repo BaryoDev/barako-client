@@ -97,12 +97,13 @@ services:
     restart: unless-stopped
     depends_on:
       - api
-    # Not read_only: the pinned Brew writes the base path, the API address and env-config.js into /app
-    # at start, and exits when it cannot. A Brew image that sets BARAKO_RUNTIME_DIR can run read-only.
+    # Brew 1.14.0 and newer copy the app into BARAKO_RUNTIME_DIR at start and write the base path, the
+    # API address and env-config.js there, so /app stays read-only. About 16 MB of the tmpfs is used.
+    read_only: true
     tmpfs:
-      - /tmp/barako-app:size=128m
-      - /tmp
+      - /tmp:mode=1777,size=128m
     environment:
+      BARAKO_RUNTIME_DIR: /tmp/barako-app
       # The browser calls the API on the console's own host, so the refresh cookie stays same-site.
       NEXT_PUBLIC_API_URL: "http://admin.localhost:\${PORT}"
       NEXT_PUBLIC_PRESS_URL: "http://client.localhost:\${PORT}"
@@ -203,8 +204,8 @@ export const VERSIONS_JSON = `{
   },
   "brew": {
     "image": "ghcr.io/baryodev/barako-brew",
-    "tag": "1.13.0",
-    "digest": "sha256:cfc61f3522e6b8a3c477e3851cc889f039c8f8f52e6e4e835f8c7101d8fe1e42"
+    "tag": "1.14.0",
+    "digest": "sha256:812884b249461207e5bc6b5ff8a0fffb82eaacb49c7f24018268a159b3dc8d6a"
   },
   "postgres": {
     "image": "pgvector/pgvector",
