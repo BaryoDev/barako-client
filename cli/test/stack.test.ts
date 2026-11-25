@@ -707,6 +707,19 @@ describe("running states", () => {
     expect(up.args).toContain("--pull");
   });
 
+  it("a partial stack refuses files from another release and leaves them as they were", async () => {
+    await cmd("up")({});
+    const old = readFileSync(join(dir(), "compose.yml"), "utf8") + "# from an older release\n";
+    writeFileSync(join(dir(), "compose.yml"), old);
+    running = 3;
+    calls = [];
+    const e = await fails(() => cmd("up")({}));
+    expect(e.code).toBe("conflict");
+    expect(e.message).toContain("Run barako down, then barako up");
+    expect(readFileSync(join(dir(), "compose.yml"), "utf8")).toBe(old);
+    expect(calls.some((c) => c.args.includes("up"))).toBe(false);
+  });
+
   it("a partial stack at latest refuses an explicit change", async () => {
     await cmd("up")({ latest: true });
     running = 2;

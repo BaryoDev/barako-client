@@ -805,6 +805,11 @@ export function makeStackCommands(deps: StackDeps): Command[] {
           if (!settled(base)) await waitSteady(deps, dir, prior, base);
           return out;
         }
+        // A partly up stack keeps its pins, so another release's files would start the old images under new
+        // settings. A Brew 1.13.0 console, for one, cannot start read-only.
+        if (filesDiffer(dir)) {
+          throw new CliError("conflict", "The stack files in this release differ from the stack that is partly running. Run barako down, then barako up, to apply them.");
+        }
       }
 
       // A stack that is partly up keeps its settings. A stopped one takes the flags, or the pinned versions.
