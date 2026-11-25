@@ -301,6 +301,16 @@ describe("files", () => {
     }
   });
 
+  it("runs the console read-only from a runtime directory on its tmpfs", () => {
+    const console = COMPOSE_YML.slice(COMPOSE_YML.indexOf("\n  console:"), COMPOSE_YML.indexOf("\n  caddy:"));
+    expect(console).toContain("image: ${BREW_IMAGE}");
+    expect(console).toMatch(/^\s+read_only: true$/m);
+    expect(console).toContain("- /tmp:mode=1777,size=128m");
+    expect(console).toContain("BARAKO_RUNTIME_DIR: /tmp/barako-app");
+    const brew = (JSON.parse(VERSIONS_JSON) as { brew: { tag: string } }).brew.tag.split(".").map(Number);
+    expect(brew[0]! > 1 || (brew[0] === 1 && brew[1]! >= 14)).toBe(true);
+  });
+
   it("Caddy routes the hosts as designed", () => {
     expect(CADDYFILE).toMatch(/http:\/\/client\.localhost:8080 \{\s+handle \/api\/public\/files\* \{\s+reverse_proxy api:8080 \{\s+header_up Host api\s+header_up X-Tenant client/);
     expect(CADDYFILE).not.toMatch(/handle \/files/);
