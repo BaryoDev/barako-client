@@ -6,3 +6,10 @@ export function pathSegment(value: string): string {
   }
   return encodeURIComponent(value);
 }
+
+/** Remove every trailing "/" from a string. Runs in linear time on any input. */
+export function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+  return end === value.length ? value : value.slice(0, end);
+}

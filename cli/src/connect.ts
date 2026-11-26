@@ -26,7 +26,7 @@ export function connect(
       throw new CliError("usage", "--key-file needs a path.");
     }
     try {
-      key = readFile(flags.keyFile).replace(/[\r\n]+$/, "").trim();
+      key = readFile(flags.keyFile).trim();
     } catch {
       throw new CliError("usage", `Cannot read the key file ${flags.keyFile}.`);
     }

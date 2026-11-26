@@ -151,7 +151,7 @@ function candidateSecrets(argv: string[], env: Env, io: Io): string[] {
   }
   for (const f of files) {
     try {
-      const v = io.readFile(f).replace(/[\r\n]+$/, "").trim();
+      const v = io.readFile(f).trim();
       if (v) out.push(v);
     } catch {
       // connect() reports an unreadable file.

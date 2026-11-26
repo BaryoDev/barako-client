@@ -1,3 +1,4 @@
+import { trimTrailingSlashes } from "./path";
 import {
   ApiKeyAuthenticator,
   JwtAuthenticator,
@@ -106,7 +107,7 @@ export function createClient(config: ClientConfig): BarakoClient {
       "createClient: baseUrl must not contain a user or password. Use apiKey, or sign in with auth.login.",
     );
   }
-  const baseUrl = config.baseUrl.replace(/\/+$/, "");
+  const baseUrl = trimTrailingSlashes(config.baseUrl);
   const fetchImpl = config.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
     throw new Error("createClient: no global fetch here, pass config.fetch.");

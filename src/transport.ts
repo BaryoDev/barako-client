@@ -1,3 +1,4 @@
+import { trimTrailingSlashes } from "./path";
 import type { Authenticator } from "./auth";
 import { callOpts, fetchText, invalidJson, isRead, resolveTimeout, toError, type CallOptions, type HttpLimits, type TextResponse } from "./http";
 
@@ -32,7 +33,7 @@ export class Transport {
     private readonly limits: HttpLimits = { timeouts: { readMs: 0, writeMs: 0 } },
     private readonly guard: () => void = () => {},
   ) {
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.baseUrl = trimTrailingSlashes(baseUrl);
   }
 
   async request<T>(opts: RequestOptions): Promise<T> {
