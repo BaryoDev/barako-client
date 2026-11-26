@@ -89,8 +89,15 @@ jobs:
       - run: npm install -g npm@12.2.1
       - name: Publish to npmjs (trusted publishing)
         id: npmjs
+        # The CLI depends on the client, so the client goes first, and a CLI failure cannot stop it.
+        # Trusted publishing cannot create a package, so a package that is not on npm yet is skipped
+        # with a warning: publish its tarball from the package artifact by hand once, then add this
+        # workflow as its trusted publisher.
         run: |
-          for tgz in ./out/*.tgz; do
+          seen=""
+          for tgz in ./out/baryodev-barako-client-*.tgz ./out/*.tgz; do
+            case "$seen" in *"|$tgz|"*) continue ;; esac
+            seen="$seen|$tgz|"
             name=$(tar -xzOf "$tgz" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0)).name')
             version=$(tar -xzOf "$tgz" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0)).version')
             case "$name" in
@@ -99,6 +106,12 @@ jobs:
               *) echo "unexpected package $name"; exit 1 ;;
             esac
             echo "${key}_version=$version" >> "$GITHUB_OUTPUT"
+            if ! npm view "$name" name --registry https://registry.npmjs.org >/dev/null 2>"$RUNNER_TEMP/view.err" \
+              && grep -q E404 "$RUNNER_TEMP/view.err"; then
+              echo "::warning::$name is not on npm yet. Publish $(basename "$tgz") from the package artifact by hand once, then add this workflow as its trusted publisher."
+              echo "$key=false" >> "$GITHUB_OUTPUT"
+              continue
+            fi
             existing=$(npm view "$name@$version" version --registry https://registry.npmjs.org 2>/dev/null || true)
             if [ -n "$existing" ]; then
               echo "$name@$version is already on npm, skipping"
@@ -116,7 +129,10 @@ jobs:
           scope: "@baryodev"
       - name: Mirror to GitHub Packages
         run: |
-          for tgz in ./out/*.tgz; do
+          seen=""
+          for tgz in ./out/baryodev-barako-client-*.tgz ./out/*.tgz; do
+            case "$seen" in *"|$tgz|"*) continue ;; esac
+            seen="$seen|$tgz|"
             name=$(tar -xzOf "$tgz" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0)).name')
             version=$(tar -xzOf "$tgz" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0)).version')
             existing=$(npm view "$name@$version" version --registry https://npm.pkg.github.com 2>/dev/null || true)
