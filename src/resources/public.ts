@@ -1,4 +1,4 @@
-import { pathSegment } from "../path";
+import { pathSegment, trimTrailingSlashes } from "../path";
 import { callOpts, type CallOptions } from "../http";
 import type { Transport } from "../transport";
 import { BarakoError } from "../errors";
@@ -58,7 +58,7 @@ function toMenuItems(raw: unknown, depth = 0): MenuItem[] {
 }
 
 export function publicResource(transport: Transport, baseUrl: string): PublicResource {
-  const base = baseUrl.replace(/\/+$/, "");
+  const base = trimTrailingSlashes(baseUrl);
 
   const orNull = async <T>(p: Promise<T>): Promise<T | null> => {
     try {

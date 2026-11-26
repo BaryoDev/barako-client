@@ -1,3 +1,4 @@
+import { trimTrailingSlashes } from "./path";
 import { BarakoError } from "./errors";
 import {
   SUPPORTED_CONTRACT,
@@ -68,7 +69,7 @@ export async function checkContract(argv: string[], deps: CheckContractDeps): Pr
   // Keep the path prefix, drop any query and fragment, then add the route.
   meta.search = "";
   meta.hash = "";
-  meta.pathname = `${meta.pathname.replace(/\/+$/, "")}/api/meta`;
+  meta.pathname = `${trimTrailingSlashes(meta.pathname)}/api/meta`;
 
   let res;
   try {
