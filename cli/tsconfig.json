@@ -11,7 +11,6 @@
     "forceConsistentCasingInFileNames": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "baseUrl": ".",
     "paths": {
       "@baryodev/barako-client": ["../src/index.ts"]
     }
