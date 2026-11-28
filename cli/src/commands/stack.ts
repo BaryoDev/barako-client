@@ -124,11 +124,17 @@ interface Pin {
 }
 type Versions = Record<"core" | "press" | "brew" | "postgres" | "caddy", Pin>;
 
+/** The services --image can replace. */
+const OVERRIDABLE = ["core", "press", "brew"] as const;
+type Overridable = (typeof OVERRIDABLE)[number];
+
 interface State {
   port: number;
   tenant: string;
   latest: boolean;
   versions: Versions;
+  /** The services whose pin came from --image. Their pins in `versions` hold the given image and tag, no digest. */
+  overridden?: Overridable[];
   /** Set once the tenant, kit and API key exist, so a second up does not sign in again. */
   bootstrap?: { kit: string; hash?: string };
 }
@@ -138,8 +144,8 @@ const KIT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DEFAULT_KIT = "blog";
 /** The kit every stack gets first: Press needs the site settings. */
 const BASE_KIT = "site";
-/** The blueprints built into core 5.9.0. Core lists built-ins first, so a file with one of these names is never used. */
-const BUILTIN_KITS = ["blog", "devsite", "docs", "email", "events", "portfolio", "site"];
+/** The blueprints built into core. Core lists built-ins first, so a file with one of these names is never used. */
+const BUILTIN_KITS = ["attendance", "blog", "devsite", "docs", "email", "events", "inventory", "portfolio", "site"];
 const SERVICE_LIST = ["postgres", "api", "site", "console", "caddy"];
 const MAX_KIT_BYTES = 256 * 1024;
 const KEY_FILE = "api-key";
@@ -186,11 +192,43 @@ export function resolveKit(value: unknown): Kit | undefined {
   const norm = typeof name === "string" ? name.trim().toLowerCase() : "";
   if (!KIT_NAME.test(norm)) throw new CliError("usage", KIT_JSON);
   if (BUILTIN_KITS.includes(norm)) {
-    throw new CliError("usage", `The kit file is named '${norm}', which is a built-in kit in core 5.9.0, so core would use the built-in and ignore the file. Rename the kit in the file.`);
+    throw new CliError("usage", `The kit file is named '${norm}', which is a built-in kit in core, so core would use the built-in and ignore the file. Rename the kit in the file.`);
   }
   return { name: norm, file: text, hash: createHash("sha256").update(text).digest("hex") };
 }
 
+
+/** At most 255 characters, a lower-case repository path, and a tag. No digest, no registry with a port. */
+const IMAGE_REF = /^[a-z0-9]+(?:[._/-][a-z0-9]+)*:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+const MAX_IMAGE_REF = 255;
+/** One fixed text for every refused --image, so a refused value is never echoed back. */
+const IMAGE_USAGE =
+  "--image needs <service>=<image>:<tag> with a service of core, press or brew, once per service. The image is a lower-case repository path and the tag is required. Digests and registries with a port are not accepted.";
+
+/**
+ * The --image values: `core=ghcr.io/baryodev/barako-cms:master`, repeatable, one per service. The text is
+ * untrusted and reaches docker and the compose environment, so each ref is checked against IMAGE_REF
+ * before it is kept. A refused value is never named in the error.
+ */
+export function parseImages(value: unknown): Partial<Record<Overridable, Pin>> | undefined {
+  if (value === undefined) return undefined;
+  const list = Array.isArray(value) ? value : [value];
+  const out: Partial<Record<Overridable, Pin>> = {};
+  for (const item of list) {
+    if (typeof item !== "string") throw new CliError("usage", IMAGE_USAGE);
+    const eq = item.indexOf("=");
+    const service = item.slice(0, eq);
+    const ref = item.slice(eq + 1);
+    if (eq <= 0 || !(OVERRIDABLE as readonly string[]).includes(service) || ref.length > MAX_IMAGE_REF || !IMAGE_REF.test(ref)) {
+      throw new CliError("usage", IMAGE_USAGE);
+    }
+    if (out[service as Overridable]) throw new CliError("usage", "--image names a service more than once.");
+    // The check allows no colon in the image part, so the last one starts the tag.
+    const colon = ref.lastIndexOf(":");
+    out[service as Overridable] = { image: ref.slice(0, colon), tag: ref.slice(colon + 1) };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /** A port as an integer from 1024 to 65535. */
 export function parsePort(value: unknown): number {
@@ -223,6 +261,29 @@ function newest(): Versions {
   return v;
 }
 
+/** The pins for a start: the pinned versions or the newest tags, then each --image on top. */
+function versionsFor(latest: boolean, images: Partial<Record<Overridable, Pin>> | undefined): Versions {
+  const v = latest ? newest() : pinned();
+  for (const k of OVERRIDABLE) {
+    const o = images?.[k];
+    if (o) v[k] = { image: o.image, tag: o.tag };
+  }
+  return v;
+}
+
+/** The services in `images` whose image is not what the stack already runs from --image. */
+function changedImages(prior: State, images: Partial<Record<Overridable, Pin>> | undefined): Overridable[] {
+  return OVERRIDABLE.filter((k) => {
+    const o = images?.[k];
+    return !!o && (!prior.overridden?.includes(k) || imageRef(prior.versions[k]) !== imageRef(o));
+  });
+}
+
+/** The overridden pins as text, for status and the notice. */
+function overriddenRefs(state: State): Record<string, string> {
+  return Object.fromEntries((state.overridden ?? []).map((k) => [k, imageRef(state.versions[k])]));
+}
+
 const CORRUPT = Symbol("corrupt");
 
 /** The state, undefined when there is none, CORRUPT when state.json cannot be read as a state. */
@@ -246,7 +307,9 @@ function readState(dir: string): State | undefined | typeof CORRUPT {
     const bootOk =
       b === undefined ||
       (typeof b === "object" && b !== null && typeof (b as { kit?: unknown }).kit === "string" && ((b as { hash?: unknown }).hash === undefined || typeof (b as { hash?: unknown }).hash === "string"));
-    return ok && bootOk ? s : CORRUPT;
+    const o = (s as { overridden?: unknown }).overridden;
+    const overOk = o === undefined || (Array.isArray(o) && o.every((k) => (OVERRIDABLE as readonly unknown[]).includes(k)));
+    return ok && bootOk && overOk ? s : CORRUPT;
   } catch {
     return CORRUPT;
   }
@@ -727,6 +790,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       { name: "port", kind: "flag", type: "string", description: `Port for the site and console on 127.0.0.1, 1024 to 65535. Default ${DEFAULT_PORT}.` },
       { name: "kit", kind: "flag", type: "string", description: `A kit to apply: a name core knows (default ${DEFAULT_KIT}), or the path to a blueprint file. A file is copied into the stack folder and read by core, never run.` },
       { name: "latest", kind: "flag", type: "boolean", description: "Use the newest published core, Press and Brew images instead of the versions pinned in this release." },
+      { name: "image", kind: "flag", type: "string[]", description: "Run one service from another image: core, press or brew, as <service>=<image>:<tag>, for example core=ghcr.io/baryodev/barako-cms:master. Repeat for more services. The tag is required, digests and registries with a port are not accepted. It wins over --latest for that service, and the image is pulled again on every up." },
     ],
     offline: true,
     async run(ctx: RunContext, args) {
@@ -734,6 +798,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       const wantPort = args.port === undefined ? undefined : parsePort(args.port);
       const wantLatest = args.latest === true;
       const kit = resolveKit(args.kit);
+      const images = parseImages(args.image);
 
       await requireDocker(deps);
 
@@ -790,7 +855,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       const upNow = prior ? await runningServices(deps, dir, prior) : [];
       const running = upNow.length;
       if (prior && running > 0) {
-        const changed = (wantPort !== undefined && wantPort !== prior.port) || (wantLatest && !prior.latest);
+        const changed = (wantPort !== undefined && wantPort !== prior.port) || (wantLatest && !prior.latest) || changedImages(prior, images).length > 0;
         if (changed) {
           throw new CliError("conflict", "The stack is running with other settings. Run barako down, then barako up with the new ones.");
         }
@@ -820,7 +885,8 @@ export function makeStackCommands(deps: StackDeps): Command[] {
             port: wantPort ?? prior?.port ?? DEFAULT_PORT,
             tenant: TENANT,
             latest: wantLatest,
-            versions: wantLatest ? newest() : pinned(),
+            versions: versionsFor(wantLatest, images),
+            ...(images ? { overridden: OVERRIDABLE.filter((k) => images[k]) } : {}),
             ...(prior?.bootstrap ? { bootstrap: prior.bootstrap } : {}),
           };
 
@@ -836,7 +902,8 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       ctx.stdio?.log("Starting the stack. The first run pulls images and can take several minutes.");
       const r = await compose(deps, dir, state, [
         "up", "-d", "--wait", "--wait-timeout", "600",
-        ...(state.latest ? ["--pull", "always"] : []),
+        // An overridden image is usually a moving tag such as master, so it is pulled again every time.
+        ...(state.latest || (state.overridden?.length ?? 0) > 0 ? ["--pull", "always"] : []),
       ]);
       if (r.code !== 0) throw failure("docker compose up failed", r, dir);
       const after = await runningServices(deps, dir, state);
@@ -847,7 +914,10 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       }
       // Sampled before the bootstrap, so the time it takes counts toward the steady window.
       const base = await containerStates(deps, dir, state);
-      const notice = state.latest ? "Using the newest published images, not the versions pinned in this release." : undefined;
+      const notice = [
+        state.latest ? "Using the newest published images, not the versions pinned in this release." : undefined,
+        state.overridden?.length ? `Running ${Object.entries(overriddenRefs(state)).map(([k, v]) => `${k} from ${v}`).join(", ")} (--image), not the versions pinned in this release.` : undefined,
+      ].filter(Boolean).join(" ");
       const out = await finish(state, { alreadyRunning: false, ...(notice ? { notice } : {}) });
       await waitSteady(deps, dir, state, base);
       return out;
@@ -872,6 +942,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
         running: rows.length > 0 && rows.every((s) => s.state === "running"),
         port: state.port,
         services: rows,
+        ...(state.overridden?.length ? { overridden: overriddenRefs(state) } : {}),
         ...urls(state.port),
       };
     },
