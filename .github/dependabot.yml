@@ -15,6 +15,15 @@ updates:
       npm-major:
         patterns: ["*"]
         update-types: ["major"]
+    ignore:
+      # tsup builds the .d.ts files through the TypeScript compiler API, which TypeScript 7 does
+      # not ship. Lift this when a tsup release builds declarations with TypeScript 7.
+      - dependency-name: "typescript"
+        versions: [">=7"]
+      # Node types follow the oldest Node the cli supports (engines in cli/package.json), so code
+      # cannot call an API that Node version lacks.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
