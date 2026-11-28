@@ -1,9 +1,12 @@
-import { randomBytes } from "node:crypto";
-import { ContentStatus, type BarakoClient } from "@baryodev/barako-client";
+import { createHash, randomBytes } from "node:crypto";
+import { ContentStatus, type AddFieldInput, type BarakoClient, type ReadableContentType } from "@baryodev/barako-client";
+import { KNOWN_FIELD_TYPES } from "../data-schema";
 import {
+  addField,
   createEntry,
   currentVersionOf,
   eraseEntry,
+  listContentTypes,
   prepareUpdate,
   requireRestorable,
   requireVersion,
@@ -21,6 +24,7 @@ import {
   type Fingerprint,
   type Plan,
   type PlanAction,
+  type TypeFingerprint,
 } from "./plans";
 import { ArgumentError, checkId, RESULT_CAP_BYTES, shape, TOOLS, type RunContext, type RunResult, type Tool } from "./tools";
 
@@ -33,6 +37,9 @@ const NOTHING = "Nothing to change. Give at least one field in data.";
 const PLAN_TOO_LARGE = "The plan is over 256 KB, so no plan was made. Use the barako CLI.";
 const CREATED_NO_ID = "The entry was created. The answer had no id. List the entries before you plan another create.";
 const APPLIED_TOO_LARGE = "The change was made. The result is over 256 KB, so it is not shown.";
+
+const TYPE_CHANGED = "The content type changed since the plan, plan again.";
+const NO_SUCH_TYPE = "There is no such content type in the list this key can read. Call list_content_types and use a name from it.";
 
 const PLAN_NOTE = "It changes nothing and returns a one-time token for apply.";
 
@@ -217,6 +224,143 @@ const planStatus: Tool = {
   },
 };
 
+const MAX_OPTIONS = 200;
+const MAX_TEXT = 200;
+
+/** A short text for a body field. Unlike an id it may hold a slash, because it never goes in a URL. */
+function checkText(value: unknown, label: string): string {
+  if (typeof value !== "string") throw new ArgumentError(`"${label}" must be a string.`);
+  if (value.trim() === "") throw new ArgumentError(`"${label}" must not be empty.`);
+  if (value.length > MAX_TEXT) throw new ArgumentError(`"${label}" is longer than ${MAX_TEXT} characters.`);
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value)) throw new ArgumentError(`"${label}" must not hold control characters.`);
+  return value;
+}
+
+/** Options as core takes them: a value and a label. A bare string is both. */
+function checkOptions(value: unknown): { value: string; label: string }[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ArgumentError('"options" must be a list with at least one option.');
+  if (value.length > MAX_OPTIONS) throw new ArgumentError(`"options" has more than ${MAX_OPTIONS} options.`);
+  return value.map((o) => {
+    if (typeof o === "string") return { value: checkText(o, "options"), label: o };
+    if (!isPlainObject(o) || Object.keys(o).some((k) => k !== "value" && k !== "label")) {
+      throw new ArgumentError('Each option must be a string, or an object with "value" and optionally "label".');
+    }
+    const v = checkText(o.value, "options value");
+    return { value: v, label: o.label === undefined ? v : checkText(o.label, "options label") };
+  });
+}
+
+/** A hash of the type's fields as a reader sees them. The readable type carries no version, ETag or
+ *  update time, so this changes when a field is added, removed, renamed, retyped or made required. */
+function fingerprintOfType(type: ReadableContentType): TypeFingerprint {
+  const fields = (type.fields ?? []).map((f) => [String(f.name).toLowerCase(), f.type, f.isRequired === true, f.multiple === true, f.referenceType ?? null, f.itemType ?? null]);
+  return createHash("sha256").update(JSON.stringify(fields)).digest("hex").slice(0, 32);
+}
+
+const planAddField: Tool = {
+  name: "plan_add_field",
+  title: "Plan a new field",
+  description: `Check one new field on a content type without adding it. This only adds: it cannot remove, rename or retype a field, and it adds one field per plan. The plan is refused when the type is not in the list, the field name is already on the type (case does not matter), or a needed input is missing. ${PLAN_NOTE} Send the token to apply_plan to add the field. The key needs contenttype:write to apply it. Existing entries are not changed. Read the type again with get_content_type afterwards.`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      contentType: { type: "string", description: "The content type name, as returned by list_content_types." },
+      fieldName: { type: "string", description: "The new field's name. It must not be on the type yet." },
+      kind: { type: "string", description: 'The field kind, such as "text", "int", "bool", "date", "choice" or "reference". The API checks it.' },
+      displayName: { type: "string", description: "The label an editor shows. Default: the field name." },
+      required: { type: "boolean", description: "Make the field required. Default false. The API refuses a required field with no defaultValue on a type that has entries." },
+      defaultValue: { description: "The value an entry gets when it leaves the field out." },
+      referenceType: { type: "string", description: 'The content type a "reference" field points to. Needed for a reference.' },
+      options: {
+        type: "array",
+        minItems: 1,
+        maxItems: MAX_OPTIONS,
+        items: {
+          oneOf: [
+            { type: "string" },
+            { type: "object", properties: { value: { type: "string" }, label: { type: "string" } }, required: ["value"], additionalProperties: false },
+          ],
+        },
+        description: 'The choices of a "choice" field, each a string or an object with value and label. Needed for a choice, refused for any other kind.',
+      },
+      multiple: { type: "boolean", description: 'For a "choice", whether an entry holds a list of options. Default false.' },
+      itemType: { type: "string", description: 'For an "array", the kind every item is.' },
+    },
+    required: ["contentType", "fieldName", "kind"],
+    additionalProperties: false,
+  },
+  annotations: PLAN_HINTS,
+  tooLarge: PLAN_TOO_LARGE,
+  target: (a) => a.contentType as string,
+  parse(raw) {
+    const a = shape(raw, ["contentType", "fieldName", "kind", "displayName", "required", "defaultValue", "referenceType", "options", "multiple", "itemType"]);
+    if (a.kind === undefined) throw new ArgumentError('"kind" is needed.');
+    const kind = checkText(a.kind, "kind");
+    const lower = kind.toLowerCase();
+    const out: Record<string, unknown> = {
+      contentType: checkId(a.contentType, "contentType"),
+      fieldName: checkText(a.fieldName, "fieldName"),
+      kind,
+    };
+    if (a.displayName !== undefined) out.displayName = checkText(a.displayName, "displayName");
+    const required = checkBool(a.required, "required");
+    if (required !== undefined) out.required = required;
+    if (a.defaultValue !== undefined) {
+      requireFits(a.defaultValue);
+      out.defaultValue = a.defaultValue;
+    }
+    if (lower === "reference" && a.referenceType === undefined) throw new ArgumentError('A "reference" field needs "referenceType".');
+    if (a.referenceType !== undefined) out.referenceType = checkText(a.referenceType, "referenceType");
+    if (lower === "choice" && a.options === undefined) throw new ArgumentError('A "choice" field needs "options".');
+    if (a.options !== undefined) {
+      if (lower !== "choice") throw new ArgumentError('"options" is only for a "choice" field.');
+      out.options = checkOptions(a.options);
+    }
+    const multiple = checkBool(a.multiple, "multiple");
+    if (multiple !== undefined) out.multiple = multiple;
+    if (a.itemType !== undefined) out.itemType = checkText(a.itemType, "itemType");
+    return out;
+  },
+  async run(client, a, ctx) {
+    const asked = a.contentType as string;
+    const names = await listContentTypes(client);
+    const listed = names.find((n) => n.toLowerCase() === asked.toLowerCase());
+    if (listed === undefined) throw new CliError("not_found", NO_SUCH_TYPE, { status: 404 });
+    const type = await client.contentTypes.get(listed);
+    const fieldName = a.fieldName as string;
+    if ((type.fields ?? []).some((f) => String(f.name).toLowerCase() === fieldName.toLowerCase())) {
+      throw new CliError("conflict", `The content type "${listed}" already has a field named "${fieldName}". This tool only adds fields, it does not change one.`, { status: 409 });
+    }
+    const kind = a.kind as string;
+    const required = a.required === true;
+    const input: AddFieldInput = {
+      fieldName,
+      type: kind,
+      displayName: (a.displayName as string | undefined) ?? fieldName,
+      isRequired: required,
+      ...(a.defaultValue === undefined ? {} : { defaultValue: a.defaultValue }),
+      ...(a.referenceType === undefined ? {} : { referenceType: a.referenceType as string }),
+      ...(a.options === undefined ? {} : { options: a.options as { value: string; label: string }[] }),
+      ...(a.multiple === undefined ? {} : { multiple: a.multiple as boolean }),
+      ...(a.itemType === undefined ? {} : { itemType: a.itemType as string }),
+    };
+    const notes: string[] = [];
+    if (!KNOWN_FIELD_TYPES.includes(kind.toLowerCase())) notes.push(`This version of the barako CLI does not know the kind "${kind}". The API checks it when the plan is applied.`);
+    if (required && input.defaultValue === undefined) notes.push("The API refuses a required field with no defaultValue when the type already has entries.");
+    const changes = {
+      contentType: listed,
+      field: fieldName,
+      kind,
+      required,
+      summary: `Add the ${required ? "required" : "optional"} ${kind} field "${fieldName}" to the content type "${listed}". The type has ${(type.fields ?? []).length} fields now. Nothing is removed or renamed.`,
+      request: input,
+      ...(notes.length ? { notes } : {}),
+    };
+    return planResult(ctx, { action: "add_field", target: listed, input, fingerprint: fingerprintOfType(type) }, changes);
+  },
+};
+
 function entryFacts(entry: unknown) {
   return {
     contentType: (entry as { contentType?: unknown } | undefined)?.contentType ?? null,
@@ -286,6 +430,12 @@ async function reread(client: BarakoClient, id: string, planned: Fingerprint) {
   if (!sameFingerprint(planned, fingerprintOf(now))) throw new CliError("conflict", CHANGED);
 }
 
+/** Reads the content type again and refuses unless it is as it was at plan time. */
+async function rereadType(client: BarakoClient, name: string, planned: TypeFingerprint) {
+  const now = await client.contentTypes.get(name);
+  if (fingerprintOfType(now) !== planned) throw new CliError("conflict", TYPE_CHANGED);
+}
+
 /** Sends exactly what the plan holds.
  *
  *  Only an update carries If-Match, so only an update is safe against a write that lands between the
@@ -311,6 +461,12 @@ async function execute(client: BarakoClient, plan: Plan): Promise<unknown> {
       const res = await setStatus(client, plan.target, STATUS_ENUM[plan.to], plan.to);
       return { id: res.id, status: res.status };
     }
+    case "add_field": {
+      await rereadType(client, plan.target, plan.fingerprint);
+      const res = await addField(client, plan.target, plan.input);
+      // The field exists by now, so a thin answer must not turn into an error.
+      return { contentType: res?.contentType ?? plan.target, added: res?.added ?? plan.input.fieldName, fields: Array.isArray(res?.fields) ? res.fields : [] };
+    }
     case "rollback_entry": {
       await reread(client, plan.target, plan.fingerprint);
       const res = (await rollbackEntry(client, plan.target, plan.versionId)) as unknown as { id?: string; version?: unknown } | undefined;
@@ -334,7 +490,7 @@ function applyTool(name: string, title: string, description: string, destructive
       properties: {
         token: { type: "string", description: "The one-time token from the plan." },
         action: { type: "string", enum: [...listed], description: "The action the plan returned." },
-        target: { type: "string", description: "The target the plan returned: an entry id, or the content type name for a create." },
+        target: { type: "string", description: "The target the plan returned: an entry id, or the content type name for a create or a new field." },
       },
       required: ["token", "action", "target"],
       additionalProperties: false,
@@ -369,7 +525,7 @@ function applyTool(name: string, title: string, description: string, destructive
 const applyPlan = applyTool(
   "apply_plan",
   "Apply a plan",
-  "Make the change of a plan from plan_create_entry, plan_update_entry or plan_change_status. Needs the plan's token, action and target. A token works once and expires after 10 minutes. If a create fails with a network error, list the entries before you plan it again.",
+  "Make the change of a plan from plan_create_entry, plan_update_entry, plan_change_status or plan_add_field. Needs the plan's token, action and target. A token works once and expires after 10 minutes. If a create fails with a network error, list the entries before you plan it again.",
   false,
   WRITE_ACTIONS,
 );
@@ -388,7 +544,7 @@ export interface ToolMode {
 }
 
 /** Tools every session lists when writes are on. */
-const WRITE_TOOLS: readonly Tool[] = [planCreate, planUpdate, planStatus, applyPlan];
+const WRITE_TOOLS: readonly Tool[] = [planCreate, planUpdate, planStatus, planAddField, applyPlan];
 /** Tools that also need --allow-destructive. */
 const DESTRUCTIVE_TOOLS: readonly Tool[] = [planRollback, planErase, applyDestructive];
 

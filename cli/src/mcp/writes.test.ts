@@ -115,7 +115,7 @@ describe("mcp write tools: listing", () => {
     const tools = replies[0]!.result.tools as Json[];
     expect(tools.map((t) => t.name)).toEqual([
       "list_content_types", "get_content_type", "list_entries", "get_entry",
-      "plan_create_entry", "plan_update_entry", "plan_change_status", "apply_plan",
+      "plan_create_entry", "plan_update_entry", "plan_change_status", "plan_add_field", "apply_plan",
       "plan_rollback_entry", "plan_erase_entry", "apply_destructive_plan",
     ]);
     for (const t of tools) {
@@ -816,5 +816,217 @@ describe("mcp write tools: thin answers, limits and token handling", () => {
     for (const line of s.log) for (const t of tokens) expect(line).not.toContain(t);
     expect(s.replies[3]!.result.isError).toBe(false);
     expect(real(contents.update)).toHaveLength(1);
+  });
+});
+
+// --- plan_add_field ----------------------------------------------------------------------------
+
+const field = (name: string, type = "string", over: Json = {}): Json => ({ name, type, isRequired: false, multiple: false, validationRules: {}, ...over });
+const POST_TYPE = { name: "post", displayName: "Post", description: "", isSingleton: false, fields: [field("Title"), field("Body", "text")] };
+
+/** A fake client that serves one content type and records the add-field calls. */
+function typer(over: { readable?: string[]; type?: Json; addField?: unknown } = {}) {
+  const contentTypes: Json = {
+    readable: vi.fn().mockResolvedValue(over.readable ?? ["post", "page"]),
+    get: vi.fn().mockResolvedValue(over.type ?? POST_TYPE),
+    addField: over.addField ?? vi.fn().mockResolvedValue({ contentType: "post", added: "Note", fields: ["Title", "Body", "Note"] }),
+  };
+  return { client: { contentTypes } as unknown as BarakoClient, contentTypes };
+}
+
+const ADD = { contentType: "post", fieldName: "Note", kind: "text" };
+
+describe("mcp plan_add_field", () => {
+  it("is hidden without --allow-writes and sends nothing", async () => {
+    const { client, contentTypes } = typer();
+    const s = await converse([() => call(1, "plan_add_field", ADD)], { client, writes: false });
+    expect(s.replies[0]!.error.code).toBe(-32602);
+    for (const fn of ["readable", "get", "addField"]) expect(contentTypes[fn]).not.toHaveBeenCalled();
+  });
+
+  it("a plan says what will change in words and sends no write", async () => {
+    const { client, contentTypes } = typer();
+    const s = await converse([() => call(1, "plan_add_field", { ...ADD, displayName: "A note" })], { client });
+    expect(s.replies[0]!.result.isError).toBe(false);
+    const d = dataOf(s.replies[0]!);
+    expect(d.action).toBe("add_field");
+    expect(d.target).toBe("post");
+    expect(d.changes).toMatchObject({ contentType: "post", field: "Note", kind: "text", required: false });
+    expect(d.changes.summary).toBe('Add the optional text field "Note" to the content type "post". The type has 2 fields now. Nothing is removed or renamed.');
+    expect(d.changes.request).toEqual({ fieldName: "Note", type: "text", displayName: "A note", isRequired: false });
+    expect(d.changes.notes).toBeUndefined();
+    expect(contentTypes.addField).not.toHaveBeenCalled();
+  });
+
+  it("apply sends exactly the planned request, and the token works once", async () => {
+    const { client, contentTypes } = typer();
+    const s = await converse([() => call(1, "plan_add_field", ADD), apply(2, 0), apply(3, 0)], { client });
+    expect(contentTypes.addField.mock.calls).toEqual([["post", { fieldName: "Note", type: "text", displayName: "Note", isRequired: false }]]);
+    expect(dataOf(s.replies[1]!)).toEqual({ contentType: "post", added: "Note", fields: ["Title", "Body", "Note"] });
+    expect(s.replies[2]!.result.isError).toBe(true);
+    expect(errorOf(s.replies[2]!).message).toContain("no such plan");
+    expect(contentTypes.addField).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the listed name of the type, whatever case the agent gave", async () => {
+    const { client, contentTypes } = typer();
+    await converse([() => call(1, "plan_add_field", { ...ADD, contentType: "POST" }), apply(2, 0)], { client });
+    expect(contentTypes.get).toHaveBeenCalledWith("post");
+    expect(contentTypes.addField.mock.calls[0]![0]).toBe("post");
+  });
+
+  it("a type name with a space goes to the client as given, and one with a slash is refused", async () => {
+    const { client, contentTypes } = typer({ readable: ["my type"], type: { ...POST_TYPE, name: "my type" } });
+    const s = await converse([() => call(1, "plan_add_field", { ...ADD, contentType: "my type" }), apply(2, 0), () => call(3, "plan_add_field", { ...ADD, contentType: "a/b" })], { client });
+    expect(contentTypes.addField.mock.calls[0]![0]).toBe("my type");
+    expect(s.replies[2]!.result.isError).toBe(true);
+    expect(errorOf(s.replies[2]!).message).toContain("slash");
+  });
+
+  it("field name, display name and options travel in the body only", async () => {
+    const { client, contentTypes } = typer();
+    const name = "x/../y?z=1";
+    await converse(
+      [() => call(1, "plan_add_field", { contentType: "post", fieldName: name, kind: "choice", displayName: "A/B", options: ["a", { value: "b", label: "Bee" }] }), apply(2, 0)],
+      { client },
+    );
+    expect(contentTypes.addField.mock.calls[0]![0]).toBe("post");
+    expect(contentTypes.addField.mock.calls[0]![1]).toEqual({
+      fieldName: name,
+      type: "choice",
+      displayName: "A/B",
+      isRequired: false,
+      options: [{ value: "a", label: "a" }, { value: "b", label: "Bee" }],
+    });
+  });
+
+  it("refuses before any write: unknown type, name already there (any case), missing input", async () => {
+    const { client, contentTypes } = typer();
+    const s = await converse(
+      [
+        () => call(1, "plan_add_field", { ...ADD, contentType: "nope" }),
+        () => call(2, "plan_add_field", { ...ADD, fieldName: "title" }),
+        () => call(3, "plan_add_field", { contentType: "post", kind: "text" }),
+        () => call(4, "plan_add_field", { contentType: "post", fieldName: "Note" }),
+        () => call(5, "plan_add_field", { fieldName: "Note", kind: "text" }),
+        () => call(6, "plan_add_field", { ...ADD, kind: "reference" }),
+        () => call(7, "plan_add_field", { ...ADD, kind: "choice" }),
+        () => call(8, "plan_add_field", { ...ADD, options: ["a"] }),
+        () => call(9, "plan_add_field", { ...ADD, extra: 1 }),
+      ],
+      { client },
+    );
+    expect(errorOf(s.replies[0]!)).toMatchObject({ code: "not_found" });
+    expect(errorOf(s.replies[1]!)).toMatchObject({ code: "conflict" });
+    expect(errorOf(s.replies[1]!).message).toContain('already has a field named "title"');
+    for (let i = 2; i < 9; i++) expect(errorOf(s.replies[i]!).code, `reply ${i}`).toBe("usage");
+    expect(errorOf(s.replies[3]!).message).toContain('"kind"');
+    expect(errorOf(s.replies[2]!).message).toContain('"fieldName"');
+    expect(contentTypes.addField).not.toHaveBeenCalled();
+    expect(s.replies.every((r) => r.result.isError)).toBe(true);
+  });
+
+  it("a kind the CLI does not know is planned with a note, a required field with no default too", async () => {
+    const { client } = typer();
+    const s = await converse(
+      [() => call(1, "plan_add_field", { ...ADD, kind: "hologram" }), () => call(2, "plan_add_field", { ...ADD, required: true }), () => call(3, "plan_add_field", { ...ADD, required: true, defaultValue: "none" })],
+      { client },
+    );
+    expect(dataOf(s.replies[0]!).changes.notes[0]).toContain("does not know the kind");
+    expect(dataOf(s.replies[1]!).changes.notes[0]).toContain("defaultValue");
+    expect(dataOf(s.replies[1]!).changes.summary).toContain("required text field");
+    expect(dataOf(s.replies[2]!).changes.notes).toBeUndefined();
+    expect(dataOf(s.replies[2]!).changes.request).toMatchObject({ isRequired: true, defaultValue: "none" });
+  });
+
+  it("apply is refused when the type changed since the plan, and nothing is sent", async () => {
+    const drift: Json[] = [
+      { ...POST_TYPE, fields: [...POST_TYPE.fields, field("Note")] },
+      { ...POST_TYPE, fields: [POST_TYPE.fields[0]] },
+      { ...POST_TYPE, fields: [field("Title", "string", { isRequired: true }), POST_TYPE.fields[1]] },
+      { ...POST_TYPE, fields: [field("Title", "text"), POST_TYPE.fields[1]] },
+    ];
+    for (const next of drift) {
+      const { client, contentTypes } = typer();
+      const s = await converse(
+        [
+          () => call(1, "plan_add_field", ADD),
+          () => {
+            contentTypes.get.mockResolvedValue(next);
+            return call(2, "noop");
+          },
+          apply(3, 0),
+        ],
+        { client },
+      );
+      expect(errorOf(s.replies[2]!)).toMatchObject({ code: "conflict", message: "The content type changed since the plan, plan again." });
+      expect(contentTypes.addField).not.toHaveBeenCalled();
+    }
+  });
+
+  it("an unchanged type applies, and the type is read once at plan and once at apply", async () => {
+    const { client, contentTypes } = typer();
+    const s = await converse([() => call(1, "plan_add_field", ADD), apply(2, 0)], { client });
+    expect(s.replies[1]!.result.isError).toBe(false);
+    expect(contentTypes.get).toHaveBeenCalledTimes(2);
+  });
+
+  it("a 403 says the key needs contenttype:write and how to get one, with the server's words", async () => {
+    const { client } = typer({ addField: vi.fn().mockRejectedValue(new BarakoError(403, "This API key is missing the 'contenttype:write' scope.")) });
+    const s = await converse([() => call(1, "plan_add_field", ADD), apply(2, 0)], { client });
+    const e = errorOf(s.replies[1]!);
+    expect(e.code).toBe("forbidden");
+    expect(e.status).toBe(403);
+    expect(e.message).toContain("contenttype:write");
+    expect(e.message).toContain("create a key with contenttype:read and contenttype:write");
+    expect(e.message).toContain("barako up keeps it");
+    expect(e.message).toContain("This API key is missing the 'contenttype:write' scope.");
+  });
+
+  it("a 400, 404 and 409 come back with the server's words", async () => {
+    const cases: [number, string, Json, string][] = [
+      [400, "validation", { message: "One or more errors occurred!", errors: { generalErrors: ["Unknown field type 'hologram'."] } }, "Unknown field type 'hologram'."],
+      [404, "not_found", { message: "Not Found" }, "Not Found"],
+      [409, "conflict", { message: "One or more errors occurred!", errors: { generalErrors: ["A field change is running on 'post'."] } }, "A field change is running on 'post'."],
+    ];
+    for (const [status, code, body, words] of cases) {
+      const { client } = typer({ addField: vi.fn().mockRejectedValue(new BarakoError(status, body.message as string, body)) });
+      const s = await converse([() => call(1, "plan_add_field", ADD), apply(2, 0)], { client });
+      const e = errorOf(s.replies[1]!);
+      expect(e.code).toBe(code);
+      expect(e.status).toBe(status);
+      expect(e.message).toContain(words);
+      // The token is spent either way.
+      const again = await converse([() => call(1, "plan_add_field", ADD), apply(2, 0), apply(3, 0)], { client });
+      expect(errorOf(again.replies[2]!).message).toContain("no such plan");
+    }
+  });
+
+  it("a thin answer still reports the field that was added", async () => {
+    const { client } = typer({ addField: vi.fn().mockResolvedValue(undefined) });
+    const s = await converse([() => call(1, "plan_add_field", ADD), apply(2, 0)], { client });
+    expect(dataOf(s.replies[1]!)).toEqual({ contentType: "post", added: "Note", fields: [] });
+  });
+
+  it("a client without addField says to update it, and nothing is written", async () => {
+    const { client, contentTypes } = typer();
+    delete contentTypes.addField;
+    const s = await converse([() => call(1, "plan_add_field", ADD), apply(2, 0)], { client });
+    expect(errorOf(s.replies[1]!).code).toBe("usage");
+    expect(errorOf(s.replies[1]!).message).toContain("0.7.0");
+  });
+
+  it("apply_destructive_plan does not apply an add_field plan", async () => {
+    const { client, contentTypes } = typer();
+    const s = await converse([() => call(1, "plan_add_field", ADD), apply(2, 0, "apply_destructive_plan")], { client, destructive: true });
+    expect(s.replies[1]!.result.isError).toBe(true);
+    expect(contentTypes.addField).not.toHaveBeenCalled();
+  });
+
+  it("the plan names its type in the log and the type's fields stay out of it", async () => {
+    const { client } = typer();
+    const s = await converse([() => call(1, "plan_add_field", ADD), apply(2, 0)], { client });
+    expect(s.log[0]).toBe('2026-11-24T10:00:00.000Z tool="plan_add_field" target="post" status=ok');
+    expect(s.log[1]).toBe('2026-11-24T10:00:00.000Z tool="apply_plan" target="post" status=ok');
   });
 });

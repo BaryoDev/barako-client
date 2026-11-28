@@ -1,5 +1,7 @@
 // The read operations. The CLI commands and the MCP tools both call these, so the two cannot disagree.
 import { ContentStatus, type BarakoClient, type Content, type ListContentQuery } from "@baryodev/barako-client";
+import type { AddFieldInput, AddFieldResult } from "@baryodev/barako-client";
+import { addFieldCall } from "./client-api";
 import { dataSchemaOf } from "./data-schema";
 import { mergeData } from "./fields";
 import { CliError, codeForStatus, toCliError } from "./output";
@@ -186,4 +188,39 @@ export async function eraseEntry(client: BarakoClient, id: string): Promise<{ er
     throw scopeError(err);
   }
   return { erased: id };
+}
+
+const FORBIDDEN_FIELD =
+  "The API refused this. The key needs the contenttype:write scope, and its user needs the right to change content types. " +
+  "If the key has no contenttype:write, create a key with contenttype:read and contenttype:write and use that one. " +
+  "A key made by an earlier barako up has only the content scopes, and barako up keeps it.";
+
+/** The words the server gave for a refusal: its message, then the text of each entry in `errors`. */
+function serverWords(err: CliError): string {
+  const errors = (err.details as { errors?: unknown } | undefined)?.errors;
+  const lines: string[] = [];
+  if (typeof errors === "object" && errors !== null) {
+    for (const v of Object.values(errors)) {
+      for (const item of Array.isArray(v) ? v : [v]) if (typeof item === "string" && item !== "") lines.push(item.slice(0, 300));
+    }
+  }
+  return [err.message, ...lines.slice(0, 5)].join(" ");
+}
+
+/** Add one field to a content type. A 400, 404 or 409 keeps the server's words. A 403 says which scope
+ *  the key needs, followed by the server's own text. */
+export async function addField(client: BarakoClient, type: string, input: AddFieldInput): Promise<AddFieldResult | undefined> {
+  const call = addFieldCall(client);
+  try {
+    return await call(type, input);
+  } catch (err) {
+    const e = toCliError(err);
+    if (e.status === 403) {
+      throw new CliError("forbidden", `${FORBIDDEN_FIELD} The server said: ${e.message}`, { status: 403, details: e.details });
+    }
+    if (e.status === 400 || e.status === 404 || e.status === 409) {
+      throw new CliError(e.code, serverWords(e), { status: e.status, details: e.details });
+    }
+    throw e;
+  }
 }
