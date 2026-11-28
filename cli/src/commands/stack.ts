@@ -146,6 +146,10 @@ const DEFAULT_KIT = "blog";
 const BASE_KIT = "site";
 /** The blueprints built into core. Core lists built-ins first, so a file with one of these names is never used. */
 const BUILTIN_KITS = ["attendance", "blog", "devsite", "docs", "email", "events", "inventory", "portfolio", "site"];
+/** Built-in kits that came with core 6, so an older core answers 404 for them. */
+const CORE6_KITS = ["attendance", "inventory"];
+const core6Hint = (name: string) =>
+  `The ${name} kit is in core 6. Run barako down, then barako up --kit ${name} --image core=<a core 6 image>.`;
 const SERVICE_LIST = ["postgres", "api", "site", "console", "caddy"];
 const MAX_KIT_BYTES = 256 * 1024;
 const KEY_FILE = "api-key";
@@ -199,7 +203,7 @@ export function resolveKit(value: unknown): Kit | undefined {
 
 
 /** At most 255 characters, a lower-case repository path, and a tag. No digest, no registry with a port. */
-const IMAGE_REF = /^[a-z0-9]+(?:[._/-][a-z0-9]+)*:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+const IMAGE_REF = /^[a-z0-9]+(?:(?:[._/]|__|-+)[a-z0-9]+)*:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 const MAX_IMAGE_REF = 255;
 /** One fixed text for every refused --image, so a refused value is never echoed back. */
 const IMAGE_USAGE =
@@ -719,6 +723,8 @@ async function bootstrap(
     // Applying is all or nothing. Only core's "already exist" refusal means it was applied before.
     if (applied.status === 409 && alreadyApplied(applied.body, name)) continue;
     if (applied.status === 404) {
+      // The notice from up is returned only after this, so a core 6 kit on an older core says it here.
+      if (CORE6_KITS.includes(name)) throw new CliError("not_found", `The stack's core does not have the ${name} kit. ${core6Hint(name)}`);
       throw new CliError("not_found", `The stack does not know a kit called '${name}'. If you passed a file, run barako down and barako up again so the stack can read it.`);
     }
     const why = reasons(applied.body);
@@ -932,7 +938,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
         reverted.length > 0
           ? `Went back to the pinned version for ${reverted.map((k) => `${k} (${imageRef(state.versions[k])})`).join(", ")}, which ran from --image last time. Pass --image to run it again.`
           : undefined,
-        kit && (kit.name === "inventory" || kit.name === "attendance") && coreIsPinned
+        kit && CORE6_KITS.includes(kit.name) && coreIsPinned
           ? `The ${kit.name} kit is in core 6, and the pinned core ${imageRef(state.versions.core)} may not have it. Pass --image core=<a core 6 image> to use it.`
           : undefined,
         state.overridden?.length ? `Running ${Object.entries(overriddenRefs(state)).map(([k, v]) => `${k} from ${v}`).join(", ")} (--image), not the versions pinned in this release.` : undefined,

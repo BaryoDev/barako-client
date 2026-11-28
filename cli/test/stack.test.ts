@@ -1008,6 +1008,16 @@ describe("bootstrap", () => {
     const e = await fails(() => cmd("up")({}));
     expect(e.code).toBe("not_found");
     expect(e.message).not.toContain("LEAKED-BODY");
+    expect(e.message).not.toContain("core 6");
+  });
+
+  it.each(["inventory", "attendance"])("a 404 for the %s kit names the core 6 image fix", async (kit) => {
+    api = onKit((n) => (n === kit ? { status: 404, body: "LEAKED-BODY" } : { status: 200, body: "{}" }));
+    const e = await fails(() => cmd("up")({ kit }));
+    expect(e.code).toBe("not_found");
+    expect(e.message).toContain(`The ${kit} kit is in core 6`);
+    expect(e.message).toContain(`barako up --kit ${kit} --image core=`);
+    expect(e.message).not.toContain("LEAKED-BODY");
   });
 
   it("a failed up leaves no marker, so the next up tries the whole bootstrap again", async () => {
@@ -1116,6 +1126,8 @@ describe("image", () => {
       brew: { image: "brew", tag: "a_b.c-1" },
       core: { image: "a.b/c_d-e/f", tag: "_x" },
     });
+    expect(parseImages(["core=ghcr.io/acme/my--core:master"])!.core!.image).toBe("ghcr.io/acme/my--core");
+    expect(parseImages(["core=ghcr.io/acme/my__core:master"])!.core!.image).toBe("ghcr.io/acme/my__core");
   });
 
   it("takes an uppercase tag and a 128 character tag, and a 255 character ref", () => {
@@ -1150,6 +1162,9 @@ describe("image", () => {
     ["a tag over 128 characters", `core=ghcr.io/x/y:${"t".repeat(129)}`],
     ["a tag that starts with a dot", "core=ghcr.io/x/y:.tag"],
     ["a doubled separator", "core=ghcr.io/x//y:tag"],
+    ["three underscores", "core=ghcr.io/x/a___b:tag"],
+    ["a dash before a slash", "core=ghcr.io/x-/y:tag"],
+    ["a dot and an underscore", "core=ghcr.io/x/a._b:tag"],
     ["a leading slash", "core=/x/y:tag"],
     ["a second equals sign", `core=ghcr.io/x/y:tag=${SECRET}`],
     ["a dollar sign", `core=ghcr.io/x/y:$${SECRET}`],
