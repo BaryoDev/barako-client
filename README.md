@@ -86,6 +86,7 @@ await cms.contentTypes.list();
 await cms.contentTypes.create({ name, displayName, fields });
 await cms.contentTypes.readable();        // names of the types this caller may read
 await cms.contentTypes.get("post");       // one readable type: its fields, lifecycle, uniqueness
+await cms.contentTypes.addField("post", { fieldName: "Note", type: "string" }); // add one field, needs contenttype:write
 
 // content
 await cms.contents.list({ contentType?, page?, pageSize?, status?, search? });

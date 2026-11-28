@@ -526,6 +526,21 @@ describe("authoring calls", () => {
     expect(f.calls[0].url).toBe(`${BASE}/api/contents/types/post`);
   });
 
+  it("contentTypes.addField posts one field to the encoded type name", async () => {
+    const f = mockFetch([{ body: { contentType: "my type", added: "Note", fields: ["Title", "Note"] } }]);
+    const res = await key(f).contentTypes.addField("my type", { fieldName: "Note", type: "text", displayName: "Note", isRequired: false });
+    expect(res.added).toBe("Note");
+    expect(f.calls[0].url).toBe(`${BASE}/api/content-types/my%20type/fields`);
+    expect(f.calls[0].init.method).toBe("POST");
+    expect(JSON.parse(f.calls[0].init.body as string)).toEqual({ fieldName: "Note", type: "text", displayName: "Note", isRequired: false });
+  });
+
+  it("contentTypes.addField refuses a type name that would collapse the path", async () => {
+    const f = mockFetch([{ body: {} }]);
+    await expect(key(f).contentTypes.addField("..", { fieldName: "A", type: "text" })).rejects.toThrow(/Invalid path segment/);
+    expect(f.calls).toHaveLength(0);
+  });
+
   it("blocks.schema and pages.tree read their routes", async () => {
     const f = mockFetch([{ body: {} }, { body: {} }]);
     const cms = key(f);
