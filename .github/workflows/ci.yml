@@ -131,16 +131,37 @@ jobs:
         env:
           HOME: ${{ runner.temp }}/gate-home
         run: node cli/dist/main.js up --port "$BARAKO_GATE_PORT" --kit "$BARAKO_GATE_KIT" --image core=ghcr.io/baryodev/barako-cms:master
+      # Every kit leg must prove it runs the image it was told to, or a green run could be the pinned core.
+      - name: Check core runs master
+        run: |
+          set -uo pipefail
+          want=ghcr.io/baryodev/barako-cms:master
+          id=$(docker ps -q --filter label=com.docker.compose.project=barako --filter label=com.docker.compose.service=api)
+          if [ -z "$id" ] || [ "$(printf '%s\n' "$id" | wc -l)" -ne 1 ]; then
+            echo "::error::Expected one api container in the barako project."
+            exit 1
+          fi
+          got=$(docker inspect --format '{{.Config.Image}}' "$id")
+          if [ "$got" != "$want" ]; then
+            echo "::error::The api container runs $got, not $want."
+            exit 1
+          fi
+          echo "The api container runs $got."
+      # An empty kit would make the test file skip and the job go green, so it fails here first.
       - name: Gate test
         env:
           HOME: ${{ runner.temp }}/gate-home
-        run: npx --no-install vitest run --config cli/vitest.int.config.ts cli/test/gate.int.test.ts
+        run: |
+          test -n "$BARAKO_GATE_KIT"
+          npx --no-install vitest run --config cli/vitest.int.config.ts cli/test/gate.int.test.ts
       # Every secret in the stack folder, and any bcms_ key or token, is masked before a log is printed.
       - name: Container logs
         if: failure()
         env:
           STACK: ${{ runner.temp }}/gate-home/.barako/stack
         run: |
+          # No -e: one failed docker logs must not skip the other containers.
+          set +e
           set -uo pipefail
           script=$(mktemp)
           # A line is NAME=value in .env and the bare key in api-key. The bcms_ rule below covers a key
