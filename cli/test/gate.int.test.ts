@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { applyOf, mcpSession, resultData, toolCall } from "./mcp-session";
+import { until } from "./until";
 
 // The nightly gate: one built-in kit on a stack that runs core's master image, driven the way an agent
 // drives it, through barako mcp. The stack is started first, by the gate job, with
@@ -56,17 +57,8 @@ async function readData(id: string): Promise<Record<string, unknown>> {
   return resultData(replies[0]).data as Record<string, unknown>;
 }
 
-/** Reads until `done` accepts the value. Gives up after WAIT_MS and says what the last read was. */
-async function until<T>(what: string, read: () => Promise<T>, done: (v: T) => boolean): Promise<T> {
-  const deadline = Date.now() + WAIT_MS;
-  let last: T | undefined;
-  for (;;) {
-    last = await read();
-    if (done(last)) return last;
-    if (Date.now() + POLL_MS > deadline) throw new Error(`${what} did not settle in ${WAIT_MS / 1000} s. Last value: ${JSON.stringify(last)}`);
-    await new Promise((r) => setTimeout(r, POLL_MS));
-  }
-}
+/** Reads until `done` accepts the value, for at most WAIT_MS. A read that throws is tried again. See until.ts. */
+const wait = <T>(what: string, read: () => Promise<T>, done: (v: T) => boolean) => until(what, read, done, { timeoutMs: WAIT_MS, intervalMs: POLL_MS });
 
 function run(file: string, args: string[], timeout = 30_000): Promise<{ code: number; stdout: string }> {
   return new Promise((resolve) => {
@@ -109,7 +101,7 @@ describe.skipIf(KIT === "")("the nightly gate on core master", () => {
       { contentType: "stock-move", data: ([p]) => ({ Product: p, Qty: 10, Reason: "received" }) },
       { contentType: "stock-move", data: ([p]) => ({ Product: p, Qty: -3, Reason: "sold" }) },
     ]);
-    const data = await until(
+    const data = await wait(
       "OnHand",
       () => readData(product!),
       (d) => Number(d.OnHand) === 7,
@@ -134,7 +126,7 @@ describe.skipIf(KIT === "")("the nightly gate on core master", () => {
     ]);
     const entryData = await readData(entry!);
     expect(Number(entryData.Hours), `time-entry data: ${JSON.stringify(entryData).slice(0, 400)}`).toBe(8.5);
-    const data = await until(
+    const data = await wait(
       "HoursLast7Days",
       () => readData(employee!),
       (d) => Number(d.HoursLast7Days) === 8.5,
@@ -146,7 +138,7 @@ describe.skipIf(KIT === "")("the nightly gate on core master", () => {
     const title = `Gate check ${suffix()}`;
     await createEntries([{ contentType: "post", data: () => ({ Title: title, Slug: `gate-check-${suffix()}`, Body: "Made by the gate." }) }]);
     // Press caches pages, so give it time to pick the entry up.
-    const page = await until(
+    const page = await wait(
       "the Press home page",
       async () => {
         const p = await curl("client.localhost", "/");
