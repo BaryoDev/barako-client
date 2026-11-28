@@ -13,6 +13,7 @@ import { commands } from "../src/registry";
 import {
   dockerEnv,
   makeStackCommands,
+  parseImages,
   parsePort,
   realDeps,
   resolveKit,
@@ -1007,6 +1008,16 @@ describe("bootstrap", () => {
     const e = await fails(() => cmd("up")({}));
     expect(e.code).toBe("not_found");
     expect(e.message).not.toContain("LEAKED-BODY");
+    expect(e.message).not.toContain("core 6");
+  });
+
+  it.each(["inventory", "attendance"])("a 404 for the %s kit names the core 6 image fix", async (kit) => {
+    api = onKit((n) => (n === kit ? { status: 404, body: "LEAKED-BODY" } : { status: 200, body: "{}" }));
+    const e = await fails(() => cmd("up")({ kit }));
+    expect(e.code).toBe("not_found");
+    expect(e.message).toContain(`The ${kit} kit is in core 6`);
+    expect(e.message).toContain(`barako up --kit ${kit} --image core=`);
+    expect(e.message).not.toContain("LEAKED-BODY");
   });
 
   it("a failed up leaves no marker, so the next up tries the whole bootstrap again", async () => {
@@ -1099,6 +1110,303 @@ describe("bootstrap", () => {
   });
 });
 
+describe("image", () => {
+  const CORE = "core=ghcr.io/baryodev/barako-cms:master";
+  const upCall = () => calls.find((c) => c.args.includes("up"))!;
+  const state = () => JSON.parse(readFileSync(join(dir(), "state.json"), "utf8"));
+
+  it("takes a repository path with a tag, for core, press and brew", () => {
+    expect(parseImages(undefined)).toBeUndefined();
+    expect(parseImages([CORE])).toEqual({ core: { image: "ghcr.io/baryodev/barako-cms", tag: "master" } });
+    expect(parseImages(CORE)).toEqual({ core: { image: "ghcr.io/baryodev/barako-cms", tag: "master" } });
+    expect(
+      parseImages(["press=ghcr.io/baryodev/barako-press:0.19.2", "brew=brew:a_b.c-1", "core=a.b/c_d-e/f:_x"]),
+    ).toEqual({
+      press: { image: "ghcr.io/baryodev/barako-press", tag: "0.19.2" },
+      brew: { image: "brew", tag: "a_b.c-1" },
+      core: { image: "a.b/c_d-e/f", tag: "_x" },
+    });
+    expect(parseImages(["core=ghcr.io/acme/my--core:master"])!.core!.image).toBe("ghcr.io/acme/my--core");
+    expect(parseImages(["core=ghcr.io/acme/my__core:master"])!.core!.image).toBe("ghcr.io/acme/my__core");
+  });
+
+  it("takes an uppercase tag and a 128 character tag, and a 255 character ref", () => {
+    expect(parseImages(["core=app:Master-1"])!.core!.tag).toBe("Master-1");
+    expect(parseImages([`core=app:${"t".repeat(128)}`])!.core!.tag).toHaveLength(128);
+    const long = `${"a".repeat(255 - 1 - 128)}:${"t".repeat(128)}`;
+    expect(long).toHaveLength(255);
+    expect(parseImages([`core=${long}`])!.core!.image).toHaveLength(126);
+  });
+
+  const SECRET = "SHOULD-NEVER-BE-ECHOED";
+  const refused: [string, string][] = [
+    ["a space", `core=ghcr.io/x/y:ta g${SECRET}`],
+    ["a semicolon", `core=ghcr.io/x/y:tag;${SECRET}`],
+    ["a newline", `core=ghcr.io/x/y:tag\n${SECRET}`],
+    ["a trailing newline", "core=ghcr.io/x/y:tag\n"],
+    ["a command substitution", `core=ghcr.io/x/$(${SECRET}):tag`],
+    ["a backtick", `core=ghcr.io/x/\`${SECRET}\`:tag`],
+    ["an uppercase repository", `core=ghcr.io/Baryodev/${SECRET}:tag`],
+    ["a 256 character ref", `core=${"a".repeat(252)}:tag`],
+    ["an unknown service", `postgres=ghcr.io/x/y:tag${SECRET}`],
+    ["an uppercase service", `Core=ghcr.io/x/y:tag${SECRET}`],
+    ["an empty service", `=ghcr.io/x/y:tag${SECRET}`],
+    ["no equals sign", `ghcr.io/x/y:tag${SECRET}`],
+    ["an empty value", "core="],
+    ["no tag", `core=ghcr.io/x/y${SECRET.toLowerCase()}`],
+    ["an empty tag", `core=ghcr.io/x/y:`],
+    ["a digest only", `core=ghcr.io/x/y@sha256:${"a".repeat(64)}`],
+    ["a tag and a digest", `core=ghcr.io/x/y:tag@sha256:${"a".repeat(64)}`],
+    ["a registry with a port", `core=localhost:5000/x/y:tag`],
+    ["a registry with a port and no tag", `core=localhost:5000/x/y`],
+    ["a tag over 128 characters", `core=ghcr.io/x/y:${"t".repeat(129)}`],
+    ["a tag that starts with a dot", "core=ghcr.io/x/y:.tag"],
+    ["a doubled separator", "core=ghcr.io/x//y:tag"],
+    ["three underscores", "core=ghcr.io/x/a___b:tag"],
+    ["a dash before a slash", "core=ghcr.io/x-/y:tag"],
+    ["a dot and an underscore", "core=ghcr.io/x/a._b:tag"],
+    ["a leading slash", "core=/x/y:tag"],
+    ["a second equals sign", `core=ghcr.io/x/y:tag=${SECRET}`],
+    ["a dollar sign", `core=ghcr.io/x/y:$${SECRET}`],
+  ];
+
+  it.each(refused)("refuses %s with a usage error that does not echo it", (_name, value) => {
+    let e: { code?: string; message?: string } | undefined;
+    try {
+      parseImages([value]);
+    } catch (err) {
+      e = err as { code?: string; message?: string };
+    }
+    expect(e?.code).toBe("usage");
+    expect(e!.message).not.toContain(SECRET);
+    expect(e!.message).not.toContain(SECRET.toLowerCase());
+    const given = value.slice(value.indexOf("=") + 1);
+    if (given.length > 0) expect(e!.message).not.toContain(given);
+  });
+
+  it("refuses a 256 character ref and accepts the same ref at 255", () => {
+    const tag = ":tag";
+    expect(parseImages([`core=${"a".repeat(255 - tag.length)}${tag}`])).toBeDefined();
+    expect(() => parseImages([`core=${"a".repeat(256 - tag.length)}${tag}`])).toThrow(/--image/);
+  });
+
+  it("refuses a value that is not text, and a service named twice", () => {
+    expect(() => parseImages([5])).toThrow(/--image/);
+    expect(() => parseImages([{ toString: () => CORE }])).toThrow(/--image/);
+    expect(() => parseImages([CORE, "core=ghcr.io/x/y:other"])).toThrow(/more than once/);
+  });
+
+  it("up refuses a bad image before it starts docker or writes anything", async () => {
+    const e = await fails(() => cmd("up")({ image: [`core=ghcr.io/x/y:tag;${SECRET}`] }));
+    expect(e.code).toBe("usage");
+    expect(e.message).not.toContain(SECRET);
+    expect(calls).toEqual([]);
+    expect(httpCalls).toEqual([]);
+    expect(existsSync(dir())).toBe(false);
+  });
+
+  it("up gives the image to compose as one environment value and never in the arguments", async () => {
+    await cmd("up")({ image: [CORE] });
+    const up = upCall();
+    expect(up.env!.CORE_IMAGE).toBe("ghcr.io/baryodev/barako-cms:master");
+    expect(up.env!.PRESS_IMAGE).toContain("barako-press:0.19.2@sha256:");
+    expect(up.env!.BREW_IMAGE).toContain("barako-brew:");
+    expect(up.args.some((a) => a.includes("barako-cms"))).toBe(false);
+  });
+
+  it("the real runner passes the image as one environment value with no shell", async () => {
+    spawnMock.mockReturnValue(fakeChild(0));
+    await realDeps().docker(["compose", "up"], { env: { CORE_IMAGE: "ghcr.io/baryodev/barako-cms:master" } });
+    const [bin, args, opts] = spawnMock.mock.calls[0]!;
+    expect(bin).toBe("docker");
+    expect(args).toEqual(["compose", "up"]);
+    expect(opts.shell).toBe(false);
+    expect(opts.env.CORE_IMAGE).toBe("ghcr.io/baryodev/barako-cms:master");
+  });
+
+  it("stores the pin without a digest and marks the service as overridden", async () => {
+    await cmd("up")({ image: [CORE, "brew=ghcr.io/baryodev/barako-brew:edge"] });
+    const s = state();
+    expect(s.versions.core).toEqual({ image: "ghcr.io/baryodev/barako-cms", tag: "master" });
+    expect(s.versions.brew).toEqual({ image: "ghcr.io/baryodev/barako-brew", tag: "edge" });
+    expect(s.versions.press.tag).toBe("0.19.2");
+    expect(s.versions.press.digest).toBeDefined();
+    expect(s.overridden).toEqual(["core", "brew"]);
+    expect(s.latest).toBe(false);
+  });
+
+  it("a state without --image has no overridden list", async () => {
+    await cmd("up")({});
+    expect(state().overridden).toBeUndefined();
+  });
+
+  it("pulls with --pull always when an image is overridden, and not otherwise", async () => {
+    await cmd("up")({ image: [CORE] });
+    expect(upCall().args.join(" ")).toContain("--pull always");
+    running = 0;
+    calls = [];
+    await cmd("up")({});
+    expect(upCall().args).not.toContain("--pull");
+  });
+
+  it("wins over --latest for its service and leaves the others at latest", async () => {
+    await cmd("up")({ latest: true, image: ["core=ghcr.io/baryodev/barako-cms:master"] });
+    const up = upCall();
+    expect(up.env!.CORE_IMAGE).toBe("ghcr.io/baryodev/barako-cms:master");
+    expect(up.env!.PRESS_IMAGE).toBe("ghcr.io/baryodev/barako-press:latest");
+    expect(up.env!.BREW_IMAGE).toBe("ghcr.io/baryodev/barako-brew:latest");
+    expect(state().latest).toBe(true);
+    expect(state().overridden).toEqual(["core"]);
+  });
+
+  it("says which images it overrode, and only accepted values", async () => {
+    const out = await cmd("up")({ image: [CORE] });
+    expect(out.notice).toContain("core from ghcr.io/baryodev/barako-cms:master");
+    expect(out.versions.core).toBe("ghcr.io/baryodev/barako-cms:master");
+  });
+
+  it("a running stack refuses a changed image and names barako down", async () => {
+    await cmd("up")({ image: [CORE] });
+    running = 5;
+    calls = [];
+    const e = await fails(() => cmd("up")({ image: ["core=ghcr.io/baryodev/barako-cms:other"] }));
+    expect(e.code).toBe("conflict");
+    expect(e.message).toContain("barako down");
+    expect(calls.some((c) => c.args.includes("up"))).toBe(false);
+    expect(state().versions.core.tag).toBe("master");
+  });
+
+  it("a running stack refuses an image on a stack that had none, and a partly up one refuses too", async () => {
+    await cmd("up")({});
+    running = 5;
+    expect((await fails(() => cmd("up")({ image: [CORE] }))).code).toBe("conflict");
+    running = 2;
+    expect((await fails(() => cmd("up")({ image: [CORE] }))).code).toBe("conflict");
+  });
+
+  it("a running stack with the same image, or none given, goes on", async () => {
+    await cmd("up")({ image: [CORE] });
+    running = 5;
+    expect((await cmd("up")({ image: [CORE] })).alreadyRunning).toBe(true);
+    expect((await cmd("up")({})).alreadyRunning).toBe(true);
+    expect(state().overridden).toEqual(["core"]);
+  });
+
+  it("a partly up stack keeps its overridden image and still pulls", async () => {
+    await cmd("up")({ image: [CORE] });
+    running = 2;
+    calls = [];
+    await cmd("up")({});
+    const up = upCall();
+    expect(up.env!.CORE_IMAGE).toBe("ghcr.io/baryodev/barako-cms:master");
+    expect(up.args.join(" ")).toContain("--pull always");
+  });
+
+  it("a stopped stack comes back pinned without the flag", async () => {
+    await cmd("up")({ image: [CORE] });
+    running = 0;
+    calls = [];
+    await cmd("up")({});
+    expect(upCall().env!.CORE_IMAGE).toContain("5.9.0");
+    expect(state().overridden).toBeUndefined();
+  });
+
+  it("says which service goes back to the pinned version when a stopped stack comes up without --image", async () => {
+    await cmd("up")({ image: [CORE] });
+    running = 0;
+    const out = await cmd("up")({});
+    expect(out.notice).toContain("Went back to the pinned version for core");
+    expect(out.notice).toContain("5.9.0");
+    expect(out.notice).toContain("Pass --image");
+  });
+
+  it("gives no pinned-version notice when --image names it again, with --latest, or on a first start", async () => {
+    const first = await cmd("up")({});
+    expect(first.notice ?? "").not.toContain("Went back");
+    running = 0;
+    await cmd("up")({ image: [CORE] });
+    running = 0;
+    const again = await cmd("up")({ image: [CORE] });
+    expect(again.notice ?? "").not.toContain("Went back");
+    running = 0;
+    const latest = await cmd("up")({ latest: true });
+    expect(latest.notice ?? "").not.toContain("Went back");
+  });
+
+  it.each(["inventory", "attendance"])("%s on the pinned core gets a notice and still starts", async (kit) => {
+    const out = await cmd("up")({ kit });
+    expect(out.notice).toContain(`The ${kit} kit is in core 6`);
+    expect(out.notice).toContain("5.9.0");
+    expect(upCall().args).toContain("up");
+  });
+
+  it("gives no core 6 kit notice with --image core=, with --latest, or for another kit", async () => {
+    const withImage = await cmd("up")({ kit: "inventory", image: [CORE] });
+    expect(withImage.notice ?? "").not.toContain("is in core 6");
+    running = 0;
+    const withLatest = await cmd("up")({ kit: "attendance", latest: true });
+    expect(withLatest.notice ?? "").not.toContain("is in core 6");
+    running = 0;
+    const press = await cmd("up")({ kit: "blog", image: ["press=ghcr.io/baryodev/barako-press:master"] });
+    expect(press.notice ?? "").not.toContain("is in core 6");
+    running = 0;
+    const blog = await cmd("up")({ kit: "blog" });
+    expect(blog.notice ?? "").not.toContain("is in core 6");
+  });
+
+  it("an overridden service whose pin is not a valid image reads as a corrupt state and is not printed", async () => {
+    await cmd("up")({ image: [CORE] });
+    const s = state();
+    s.versions.core.tag = "master\nextra";
+    writeFileSync(join(dir(), "state.json"), JSON.stringify(s), { mode: 0o600 });
+    running = 0;
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("state.json is unreadable");
+    expect(e.message).not.toContain("master");
+    expect(e.message).not.toContain("extra");
+  });
+
+  it("a pin of a service that is not overridden is not checked against the image pattern", async () => {
+    await cmd("up")({ image: [CORE] });
+    const s = state();
+    s.versions.press.tag = "not a tag";
+    writeFileSync(join(dir(), "state.json"), JSON.stringify(s), { mode: 0o600 });
+    running = 0;
+    await expect(cmd("up")({})).resolves.toBeDefined();
+  });
+
+  it("status shows an overridden pin as overridden, and nothing when none is", async () => {
+    await cmd("up")({ image: [CORE] });
+    const deps = fakeDeps();
+    const orig = deps.docker;
+    deps.docker = async (args, opts) =>
+      args.includes("ps") && args.includes("--all") ? { code: 0, stderr: "", stdout: '{"Service":"api","State":"running"}\n' } : orig(args, opts);
+    const c = makeStackCommands(deps).find((x) => x.name === "status")!;
+    const out = (await c.run({ client: {} as never, readFile: () => "" }, {})) as Record<string, any>;
+    expect(out.overridden).toEqual({ core: "ghcr.io/baryodev/barako-cms:master" });
+
+    await cmd("down")();
+    rmSync(dir(), { recursive: true, force: true });
+    await cmd("up")({});
+    const plain = (await c.run({ client: {} as never, readFile: () => "" }, {})) as Record<string, any>;
+    expect(plain.overridden).toBeUndefined();
+  });
+
+  it("a state.json with an unknown overridden service stops up", async () => {
+    await cmd("up")({ image: [CORE] });
+    const s = state();
+    s.overridden = ["postgres"];
+    writeFileSync(join(dir(), "state.json"), JSON.stringify(s), { mode: 0o600 });
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("state.json is unreadable");
+  });
+
+  it("is a repeatable flag on up", () => {
+    const flag = commands.find((x) => x.name === "up")!.args.find((a) => a.name === "image")!;
+    expect(flag).toMatchObject({ kind: "flag", type: "string[]" });
+  });
+});
+
 describe("kit", () => {
   const file = (text: string, name = "kit.json") => {
     const p = join(home, name);
@@ -1143,7 +1451,7 @@ describe("kit", () => {
 
   it("strips a byte order mark and refuses a name that is a built-in kit", () => {
     expect(resolveKit(file("\uFEFF" + JSON.stringify({ name: "mine" })))!.name).toBe("mine");
-    for (const n of ["blog", "devsite", "docs", "email", "events", "portfolio", "site", "Blog"]) {
+    for (const n of ["attendance", "blog", "devsite", "docs", "email", "events", "inventory", "portfolio", "site", "Blog"]) {
       expect(() => resolveKit(file(JSON.stringify({ name: n }))), n).toThrow(/built-in/);
     }
   });

@@ -5,9 +5,12 @@ on:
     branches: [main]
   pull_request:
   # Nightly, so a new advisory against an unchanged lockfile turns the audit job red without a push.
-  # The audit, secrets and live jobs run on it. A failed run is the signal; nothing files an issue.
+  # The audit, secrets, live and gate jobs run on it. A failed run is the signal; nothing files an issue.
   schedule:
     - cron: "17 4 * * *"
+  # By hand, to run the gate on demand. Every job runs then, since the jobs that skip on schedule
+  # skip only when the event is the schedule.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -90,6 +93,94 @@ jobs:
           BARAKO_STACK_INT: "1"
           BARAKO_STACK_PORT: "18080"
         run: npx vitest run --config cli/vitest.int.config.ts cli/test/stack.int.test.ts
+
+  # The nightly gate: each built-in kit on a stack that runs core's master image, driven through
+  # barako mcp. One runner per kit, because a stack is one compose project on one port and one
+  # subnet, so two kits in one job would clash. Press and Brew stay at the CLI's pins. A red first
+  # night may be a real break in core master, not a bug in the gate.
+  gate:
+    name: Gate (${{ matrix.kit }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        kit: [inventory, blog, attendance]
+    env:
+      BARAKO_GATE_KIT: ${{ matrix.kit }}
+      BARAKO_GATE_PORT: "18080"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # The stack folder is under a temporary HOME, so the runner's own home is never touched. Docker
+      # keeps looking for its plugins in the real one.
+      - name: Keep the Docker config
+        run: echo "DOCKER_CONFIG=${HOME}/.docker" >> "$GITHUB_ENV"
+      # A pull that fails here fails loudly, before any stack is started.
+      - name: Pull core master
+        run: docker pull ghcr.io/baryodev/barako-cms:master
+      - name: Start the stack
+        env:
+          HOME: ${{ runner.temp }}/gate-home
+        run: node cli/dist/main.js up --port "$BARAKO_GATE_PORT" --kit "$BARAKO_GATE_KIT" --image core=ghcr.io/baryodev/barako-cms:master
+      # Every kit leg must prove it runs the image it was told to, or a green run could be the pinned core.
+      - name: Check core runs master
+        run: |
+          set -uo pipefail
+          want=ghcr.io/baryodev/barako-cms:master
+          id=$(docker ps -q --filter label=com.docker.compose.project=barako --filter label=com.docker.compose.service=api)
+          if [ -z "$id" ] || [ "$(printf '%s\n' "$id" | wc -l)" -ne 1 ]; then
+            echo "::error::Expected one api container in the barako project."
+            exit 1
+          fi
+          got=$(docker inspect --format '{{.Config.Image}}' "$id")
+          if [ "$got" != "$want" ]; then
+            echo "::error::The api container runs $got, not $want."
+            exit 1
+          fi
+          echo "The api container runs $got."
+      # An empty kit would make the test file skip and the job go green, so it fails here first.
+      - name: Gate test
+        env:
+          HOME: ${{ runner.temp }}/gate-home
+        run: |
+          test -n "$BARAKO_GATE_KIT"
+          npx --no-install vitest run --config cli/vitest.int.config.ts cli/test/gate.int.test.ts
+      # Every secret in the stack folder, and any bcms_ key or token, is masked before a log is printed.
+      - name: Container logs
+        if: failure()
+        env:
+          STACK: ${{ runner.temp }}/gate-home/.barako/stack
+        run: |
+          # No -e: one failed docker logs must not skip the other containers.
+          set +e
+          set -uo pipefail
+          script=$(mktemp)
+          # A line is NAME=value in .env and the bare key in api-key. The bcms_ rule below covers a key
+          # either way. Only values made of letters, digits, _ and - are added, so none is a sed pattern.
+          { cat "$STACK/.env" "$STACK/api-key" 2>/dev/null || true; } | while IFS= read -r line; do
+            v="${line#*=}"
+            if [[ "$v" =~ ^[A-Za-z0-9_-]{8,}$ ]]; then printf 's/%s/***/g\n' "$v" >> "$script"; fi
+          done
+          printf '%s\n' 's/bcms_[A-Za-z0-9_-]+/bcms_***/g' 's/eyJ[A-Za-z0-9_.-]*/jwt_***/g' >> "$script"
+          for id in $(docker ps -aq --filter label=com.docker.compose.project=barako); do
+            echo "::group::$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} restarts={{.RestartCount}}' "$id")"
+            docker logs --tail 200 "$id" 2>&1 | sed -E -f "$script"
+            echo "::endgroup::"
+          done
+      - name: Remove the stack
+        if: always()
+        env:
+          HOME: ${{ runner.temp }}/gate-home
+        run: node cli/dist/main.js reset --yes
 
   # A tag can be moved after review, a commit SHA cannot. Every action in every workflow is pinned
   # by full SHA with the version in a comment, and this fails the build when one is not.

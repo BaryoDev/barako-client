@@ -34,8 +34,9 @@ export async function mcpSession(base: string, key: string, flags: string[], ste
   }
   child.stdin.end();
   expect(await closed).toBe(0);
-  expect(stdout).not.toContain(key);
-  expect(stderr).not.toContain(key);
+  // A boolean, so a failure never prints the key the way a string match would.
+  expect(stdout.includes(key)).toBe(false);
+  expect(stderr.includes(key)).toBe(false);
   return replies;
 }
 

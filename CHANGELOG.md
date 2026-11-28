@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- New `barako up --image <service>=<image>:<tag>`, repeatable, once per service (`core`, `press` or `brew`). It runs that service from another image, for example `core=ghcr.io/baryodev/barako-cms:master`. The value is checked before anything starts (at most 255 characters, a lower-case repository path, a tag that is required) and a refused value is not echoed. Digests and registries with a port are refused. The pin is stored without a digest, the image is pulled again every time `up` starts the stack, and it wins over `--latest` for its service. A changed `--image` on a running or partly up stack is refused like a changed `--latest`, and `barako status` lists overridden services under `overridden`.
+- `--kit` no longer accepts a file named `inventory` or `attendance`, which are built-in kits in core 6.
+- A nightly `gate` job in CI starts the inventory, blog and attendance kits on core's master image, one runner each, and drives them through `barako mcp`. The workflow can also be started by hand.
+
 ## 0.6.0
 
 - New `barako up`, `status`, `down` and `reset`: a local stack (Postgres, core 5.9.0, Press, Brew and Caddy) from images pinned by digest, started with Docker Compose. `up` writes its files and generated secrets to `~/.barako/stack` (`.env` is mode 0600), waits for the stack, signs in as `admin`, creates the tenant `client`, applies the `site` kit and then a kit (`--kit <name|path>`, default `blog`) and writes an API key (365 days) to `~/.barako/stack/api-key` (mode 0600) for `barako mcp`. A second `up` does not sign in or make a key again, it only checks that the key works. `up` says so when it keeps a key from an earlier run, and when a kit file was edited since the last one. `--latest` uses the newest published images. `down` keeps the data, `reset` deletes it. Neither password nor key is printed. `up` waits until every service has run 10 seconds without a restart (on a running stack only when one started less than 10 seconds ago), and names one that keeps restarting. Needs Docker Compose 2.17 or newer. The site is on `http://client.localhost:8080` and the console on `http://admin.localhost:8080`.
