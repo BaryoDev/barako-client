@@ -1296,6 +1296,70 @@ describe("image", () => {
     expect(state().overridden).toBeUndefined();
   });
 
+  it("says which service goes back to the pinned version when a stopped stack comes up without --image", async () => {
+    await cmd("up")({ image: [CORE] });
+    running = 0;
+    const out = await cmd("up")({});
+    expect(out.notice).toContain("Went back to the pinned version for core");
+    expect(out.notice).toContain("5.9.0");
+    expect(out.notice).toContain("Pass --image");
+  });
+
+  it("gives no pinned-version notice when --image names it again, with --latest, or on a first start", async () => {
+    const first = await cmd("up")({});
+    expect(first.notice ?? "").not.toContain("Went back");
+    running = 0;
+    await cmd("up")({ image: [CORE] });
+    running = 0;
+    const again = await cmd("up")({ image: [CORE] });
+    expect(again.notice ?? "").not.toContain("Went back");
+    running = 0;
+    const latest = await cmd("up")({ latest: true });
+    expect(latest.notice ?? "").not.toContain("Went back");
+  });
+
+  it.each(["inventory", "attendance"])("%s on the pinned core gets a notice and still starts", async (kit) => {
+    const out = await cmd("up")({ kit });
+    expect(out.notice).toContain(`The ${kit} kit is in core 6`);
+    expect(out.notice).toContain("5.9.0");
+    expect(upCall().args).toContain("up");
+  });
+
+  it("gives no core 6 kit notice with --image core=, with --latest, or for another kit", async () => {
+    const withImage = await cmd("up")({ kit: "inventory", image: [CORE] });
+    expect(withImage.notice ?? "").not.toContain("is in core 6");
+    running = 0;
+    const withLatest = await cmd("up")({ kit: "attendance", latest: true });
+    expect(withLatest.notice ?? "").not.toContain("is in core 6");
+    running = 0;
+    const press = await cmd("up")({ kit: "blog", image: ["press=ghcr.io/baryodev/barako-press:master"] });
+    expect(press.notice ?? "").not.toContain("is in core 6");
+    running = 0;
+    const blog = await cmd("up")({ kit: "blog" });
+    expect(blog.notice ?? "").not.toContain("is in core 6");
+  });
+
+  it("an overridden service whose pin is not a valid image reads as a corrupt state and is not printed", async () => {
+    await cmd("up")({ image: [CORE] });
+    const s = state();
+    s.versions.core.tag = "master\nextra";
+    writeFileSync(join(dir(), "state.json"), JSON.stringify(s), { mode: 0o600 });
+    running = 0;
+    const e = await fails(() => cmd("up")({}));
+    expect(e.message).toContain("state.json is unreadable");
+    expect(e.message).not.toContain("master");
+    expect(e.message).not.toContain("extra");
+  });
+
+  it("a pin of a service that is not overridden is not checked against the image pattern", async () => {
+    await cmd("up")({ image: [CORE] });
+    const s = state();
+    s.versions.press.tag = "not a tag";
+    writeFileSync(join(dir(), "state.json"), JSON.stringify(s), { mode: 0o600 });
+    running = 0;
+    await expect(cmd("up")({})).resolves.toBeDefined();
+  });
+
   it("status shows an overridden pin as overridden, and nothing when none is", async () => {
     await cmd("up")({ image: [CORE] });
     const deps = fakeDeps();

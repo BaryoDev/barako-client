@@ -205,6 +205,11 @@ const MAX_IMAGE_REF = 255;
 const IMAGE_USAGE =
   "--image needs <service>=<image>:<tag> with a service of core, press or brew, once per service. The image is a lower-case repository path and the tag is required. Digests and registries with a port are not accepted.";
 
+/** True when `ref` is an image and tag that --image would accept. */
+function refOk(ref: string): boolean {
+  return ref.length <= MAX_IMAGE_REF && IMAGE_REF.test(ref);
+}
+
 /**
  * The --image values: `core=ghcr.io/baryodev/barako-cms:master`, repeatable, one per service. The text is
  * untrusted and reaches docker and the compose environment, so each ref is checked against IMAGE_REF
@@ -219,7 +224,7 @@ export function parseImages(value: unknown): Partial<Record<Overridable, Pin>> |
     const eq = item.indexOf("=");
     const service = item.slice(0, eq);
     const ref = item.slice(eq + 1);
-    if (eq <= 0 || !(OVERRIDABLE as readonly string[]).includes(service) || ref.length > MAX_IMAGE_REF || !IMAGE_REF.test(ref)) {
+    if (eq <= 0 || !(OVERRIDABLE as readonly string[]).includes(service) || !refOk(ref)) {
       throw new CliError("usage", IMAGE_USAGE);
     }
     if (out[service as Overridable]) throw new CliError("usage", "--image names a service more than once.");
@@ -308,7 +313,12 @@ function readState(dir: string): State | undefined | typeof CORRUPT {
       b === undefined ||
       (typeof b === "object" && b !== null && typeof (b as { kit?: unknown }).kit === "string" && ((b as { hash?: unknown }).hash === undefined || typeof (b as { hash?: unknown }).hash === "string"));
     const o = (s as { overridden?: unknown }).overridden;
-    const overOk = o === undefined || (Array.isArray(o) && o.every((k) => (OVERRIDABLE as readonly unknown[]).includes(k)));
+    // An overridden pin reaches docker, so it must pass the same check as a given --image. Pins of services
+    // that are not overridden are the pinned versions and are not checked here.
+    const overOk =
+      o === undefined ||
+      (Array.isArray(o) &&
+        o.every((k) => (OVERRIDABLE as readonly unknown[]).includes(k) && refOk(`${s.versions[k as Overridable].image}:${s.versions[k as Overridable].tag}`)));
     return ok && bootOk && overOk ? s : CORRUPT;
   } catch {
     return CORRUPT;
@@ -790,7 +800,7 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       { name: "port", kind: "flag", type: "string", description: `Port for the site and console on 127.0.0.1, 1024 to 65535. Default ${DEFAULT_PORT}.` },
       { name: "kit", kind: "flag", type: "string", description: `A kit to apply: a name core knows (default ${DEFAULT_KIT}), or the path to a blueprint file. A file is copied into the stack folder and read by core, never run.` },
       { name: "latest", kind: "flag", type: "boolean", description: "Use the newest published core, Press and Brew images instead of the versions pinned in this release." },
-      { name: "image", kind: "flag", type: "string[]", description: "Run one service from another image: core, press or brew, as <service>=<image>:<tag>, for example core=ghcr.io/baryodev/barako-cms:master. Repeat for more services. The tag is required, digests and registries with a port are not accepted. It wins over --latest for that service, and the image is pulled again on every up." },
+      { name: "image", kind: "flag", type: "string[]", description: "Run one service from another image: core, press or brew, as <service>=<image>:<tag>, for example core=ghcr.io/baryodev/barako-cms:master. Repeat for more services. The tag is required, digests and registries with a port are not accepted. It wins over --latest for that service, and the image is pulled again every time up starts the stack." },
     ],
     offline: true,
     async run(ctx: RunContext, args) {
@@ -914,8 +924,17 @@ export function makeStackCommands(deps: StackDeps): Command[] {
       }
       // Sampled before the bootstrap, so the time it takes counts toward the steady window.
       const base = await containerStates(deps, dir, state);
+      // A stopped stack that ran an overridden image goes back to the pinned one unless --image names it again.
+      const reverted = keep || state.latest ? [] : (prior?.overridden ?? []).filter((k) => !state.overridden?.includes(k));
+      const coreIsPinned = !state.latest && !state.overridden?.includes("core");
       const notice = [
         state.latest ? "Using the newest published images, not the versions pinned in this release." : undefined,
+        reverted.length > 0
+          ? `Went back to the pinned version for ${reverted.map((k) => `${k} (${imageRef(state.versions[k])})`).join(", ")}, which ran from --image last time. Pass --image to run it again.`
+          : undefined,
+        kit && (kit.name === "inventory" || kit.name === "attendance") && coreIsPinned
+          ? `The ${kit.name} kit is in core 6, and the pinned core ${imageRef(state.versions.core)} may not have it. Pass --image core=<a core 6 image> to use it.`
+          : undefined,
         state.overridden?.length ? `Running ${Object.entries(overriddenRefs(state)).map(([k, v]) => `${k} from ${v}`).join(", ")} (--image), not the versions pinned in this release.` : undefined,
       ].filter(Boolean).join(" ");
       const out = await finish(state, { alreadyRunning: false, ...(notice ? { notice } : {}) });
