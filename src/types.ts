@@ -105,6 +105,33 @@ export interface DryRunResult {
   version?: number;
 }
 
+/** One field added to a content type (POST /api/content-types/{name}/fields). Only what a caller
+ *  needs to add a plain field. The server checks every rule. */
+export interface AddFieldInput {
+  fieldName: string;
+  /** Any name the server's field type registry accepts, such as `text`, `int` or `choice`. */
+  type: string;
+  displayName?: string;
+  isRequired?: boolean;
+  defaultValue?: unknown;
+  /** Required for a `reference`. */
+  referenceType?: string;
+  /** Required for a `choice`. */
+  options?: Array<{ value: string; label?: string }>;
+  multiple?: boolean;
+  /** For an `array`, the type every item is. */
+  itemType?: string;
+}
+
+/** The answer to an add-field call. */
+export interface AddFieldResult {
+  contentType: string;
+  /** The name of the field this call added. */
+  added: string;
+  /** Every field the type has now, in order. */
+  fields: string[];
+}
+
 /** A field as a content reader sees it (GET /api/contents/types/{name}). */
 export interface ReadableField {
   name: string;

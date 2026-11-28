@@ -1,13 +1,14 @@
 import { randomBytes } from "node:crypto";
+import type { AddFieldInput } from "@baryodev/barako-client";
 
 export const PLAN_TTL_MS = 10 * 60 * 1000;
 export const MAX_PLANS = 20;
 /** One to 64 base64url characters. A token from randomBytes(24) is 32. */
 export const TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-export type PlanAction = "create_entry" | "update_entry" | "change_status" | "rollback_entry" | "erase_entry";
-export const PLAN_ACTIONS: readonly PlanAction[] = ["create_entry", "update_entry", "change_status", "rollback_entry", "erase_entry"];
-export const WRITE_ACTIONS: readonly PlanAction[] = ["create_entry", "update_entry", "change_status"];
+export type PlanAction = "create_entry" | "update_entry" | "change_status" | "add_field" | "rollback_entry" | "erase_entry";
+export const PLAN_ACTIONS: readonly PlanAction[] = ["create_entry", "update_entry", "change_status", "add_field", "rollback_entry", "erase_entry"];
+export const WRITE_ACTIONS: readonly PlanAction[] = ["create_entry", "update_entry", "change_status", "add_field"];
 export const DESTRUCTIVE_ACTIONS: readonly PlanAction[] = ["rollback_entry", "erase_entry"];
 
 /** What the entry looked like when it was planned. Compared again at apply. */
@@ -21,11 +22,16 @@ export function sameFingerprint(a: Fingerprint, b: Fingerprint): boolean {
   return a.version === b.version && a.etag === b.etag && a.status === b.status;
 }
 
+/** What a content type looked like when a field was planned: a hash of its fields' names, kinds and
+ *  rules. The readable type has no version, ETag or update time, so this is the cheapest value that
+ *  changes when a field is added, removed, renamed or made required. Compared again at apply. */
+export type TypeFingerprint = string;
+
 interface Base {
   token: string;
   /** Milliseconds since the epoch. The plan is expired when now >= expiresAt. */
   expiresAt: number;
-  /** The entry id, or the content type name for a create. */
+  /** The entry id, or the content type name for a create or an add_field. */
   target: string;
 }
 
@@ -34,6 +40,7 @@ export type Plan = Base &
     | { action: "create_entry"; input: { contentType: string; data: Record<string, unknown>; publish: boolean }; idempotencyKey: string }
     | { action: "update_entry"; data: Record<string, unknown>; version: number; fingerprint: Fingerprint }
     | { action: "change_status"; to: "published" | "draft" | "archived"; fingerprint: Fingerprint }
+    | { action: "add_field"; input: AddFieldInput; fingerprint: TypeFingerprint }
     | { action: "rollback_entry"; versionId: string; fingerprint: Fingerprint }
     | { action: "erase_entry"; fingerprint: Fingerprint }
   );

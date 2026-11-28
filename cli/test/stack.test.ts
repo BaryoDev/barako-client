@@ -864,7 +864,7 @@ describe("bootstrap", () => {
     expect(header(blueprint, "x-tenant")).toBe("client");
     expect(key.json).toMatchObject({
       Name: "barako up",
-      Scopes: ["content:read", "content:write"],
+      Scopes: ["content:read", "content:write", "contenttype:write"],
       ContentTypes: [],
       ReadOnly: false,
     });

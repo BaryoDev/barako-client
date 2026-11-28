@@ -78,6 +78,50 @@ async function curl(host: string, path: string): Promise<{ status: number; body:
 
 const suffix = () => randomBytes(4).toString("hex");
 
+/**
+ * Adds one optional text field to a kit type through plan_add_field and apply_plan, reads the type back
+ * with get_content_type, then plans and applies an entry that sets the field and reads it back. A 409
+ * from core means a field change is still running on the type, so the add is tried again until the wait
+ * ends. A refused add made no change, so trying again cannot add the field twice. Only that 409 is tried
+ * again: a session that throws (a bad exit, no reply) fails the test, so a clean retry cannot hide it.
+ */
+async function addFieldAndUse(contentType: string, entry: () => Record<string, unknown>): Promise<void> {
+  const fieldName = `GateNote${suffix()}`;
+  const attempt = await wait(
+    `a field added to ${contentType}`,
+    async (): Promise<{ replies: any[] } | { failed: unknown }> => {
+      try {
+        return {
+          replies: await mcpSession(API, key, ["--allow-writes"], [
+            () => toolCall(1, "plan_add_field", { contentType, fieldName, kind: "string", displayName: "Gate note" }),
+            applyOf("apply_plan", 2, 0),
+          ]),
+        };
+      } catch (failed) {
+        return { failed };
+      }
+    },
+    (a) => "failed" in a || !(a.replies[1].result.isError && JSON.parse(a.replies[1].result.content[0].text).data?.error?.status === 409),
+  );
+  if ("failed" in attempt) throw attempt.failed;
+  const added = attempt.replies;
+  expect(added[0].result.isError, JSON.stringify(added[0]).slice(0, 400)).toBe(false);
+  expect(added[1].result.isError, JSON.stringify(added[1]).slice(0, 400)).toBe(false);
+  expect(resultData(added[1]).added).toBe(fieldName);
+
+  const read = await mcpSession(API, key, [], [() => toolCall(1, "get_content_type", { name: contentType })]);
+  expect(read[0].result.isError, JSON.stringify(read[0]).slice(0, 400)).toBe(false);
+  const names = (resultData(read[0]).fields as { name: string }[]).map((f) => f.name);
+  expect(names.map((n) => n.toLowerCase()), `fields of ${contentType}: ${names.join(", ")}`).toContain(fieldName.toLowerCase());
+
+  const note = `Set by the gate ${suffix()}`;
+  const [id] = await createEntries([{ contentType, data: () => ({ ...entry(), [fieldName]: note }) }]);
+  const data = await readData(id!);
+  const key2 = Object.keys(data).find((k) => k.toLowerCase() === fieldName.toLowerCase());
+  expect(key2, `entry data: ${JSON.stringify(data).slice(0, 400)}`).toBeDefined();
+  expect(data[key2!]).toBe(note);
+}
+
 describe.skipIf(KIT === "")("the nightly gate on core master", () => {
   beforeAll(() => {
     key = readFileSync(join(homedir(), ".barako", "stack", "api-key"), "utf8").trim();
@@ -107,7 +151,9 @@ describe.skipIf(KIT === "")("the nightly gate on core master", () => {
       (d) => Number(d.OnHand) === 7,
     );
     expect(Number(data.OnHand)).toBe(7);
-  }, 4 * 60_000);
+
+    await addFieldAndUse("product", () => ({ Name: `Gate product ${tag}b`, Sku: `GATE-${tag}-B`, ReorderLevel: 5 }));
+  }, 6 * 60_000);
 
   it.skipIf(KIT !== "attendance")("attendance: Hours is computed and HoursLast7Days follows the time entries", async () => {
     const replies = await mcpSession(API, key, [], [() => toolCall(1, "list_content_types", {})]);
@@ -132,7 +178,9 @@ describe.skipIf(KIT === "")("the nightly gate on core master", () => {
       (d) => Number(d.HoursLast7Days) === 8.5,
     );
     expect(Number(data.HoursLast7Days)).toBe(8.5);
-  }, 4 * 60_000);
+
+    await addFieldAndUse("employee", () => ({ Name: `Gate employee ${tag}b`, Email: `gate-${tag}-b@example.test` }));
+  }, 6 * 60_000);
 
   it.skipIf(KIT !== "blog")("blog: a published post shows on the Press site", async () => {
     const title = `Gate check ${suffix()}`;
@@ -147,5 +195,7 @@ describe.skipIf(KIT === "")("the nightly gate on core master", () => {
       (p) => p.status === 200 && p.found,
     );
     expect(page.found).toBe(true);
-  }, 4 * 60_000);
+
+    await addFieldAndUse("post", () => ({ Title: `Gate field ${suffix()}`, Slug: `gate-field-${suffix()}`, Body: "Made by the gate." }));
+  }, 6 * 60_000);
 });

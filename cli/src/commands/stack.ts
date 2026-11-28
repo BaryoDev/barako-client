@@ -740,7 +740,7 @@ async function bootstrap(
   const made = await call("POST", "/api/api-keys", {
     token,
     tenant: TENANT,
-    json: { Name: "barako up", Scopes: ["content:read", "content:write"], ExpiresAt: expires, ContentTypes: [], ReadOnly: false },
+    json: { Name: "barako up", Scopes: ["content:read", "content:write", "contenttype:write"], ExpiresAt: expires, ContentTypes: [], ReadOnly: false },
   });
   if (made.status !== 200 && made.status !== 201) throw fail("Creating the API key", made);
   const key = field(made.body, "key", "Key");

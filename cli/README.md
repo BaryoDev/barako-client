@@ -28,7 +28,8 @@ inside a compose network that reaches `http://api:8080`, pass `--allow-http` or 
 `BARAKO_ALLOW_HTTP=1`. A compose service name is not loopback, so that case needs the opt-in.
 
 A key needs `content:read` to read and `content:write` to write. `content rollback` and
-`content erase` also need `content:destructive`.
+`content erase` also need `content:destructive`. Adding a field over MCP (`plan_add_field`) needs
+`contenttype:write`. The plan reads the type with `content:read`.
 
 ## Commands
 
@@ -148,7 +149,7 @@ naming the resource and the key.
 
 The port is 8080 unless you pass `--port` (1024 to 65535, not 5005). Everything listens on 127.0.0.1 only.
 
-After the stack is healthy, `up` signs in as `admin`, creates the tenant `client`, applies the `site` kit (Press needs it) and then your kit, and makes an API key with `content:read` and `content:write`. The key expires after 365 days. `--kit` takes a name core knows (lower-case letters, digits and hyphens, default `blog`, which adds post, category, author and page) or the path to a blueprint file, which is copied into the stack folder and read by core. A file must be plain JSON with a `name`, and the name cannot be one of core's built-in kits (attendance, blog, devsite, docs, email, events, inventory, portfolio, site), because core would use the built-in. The pinned core 5.9.0 has no `inventory` or `attendance` kit, so use them with `--image core=<a core 6 image>`. Start a relative path with `./`. A second `up` does not sign in or make a key again. It checks that the key still works and makes a new one if core refuses it. A different `--kit`, or an edited kit file, applies that kit again, which only adds types. If an `api-key` file is there from an earlier `up`, it is kept, and `up` says so.
+After the stack is healthy, `up` signs in as `admin`, creates the tenant `client`, applies the `site` kit (Press needs it) and then your kit, and makes an API key with `content:read`, `content:write` and `contenttype:write`. The key expires after 365 days. `--kit` takes a name core knows (lower-case letters, digits and hyphens, default `blog`, which adds post, category, author and page) or the path to a blueprint file, which is copied into the stack folder and read by core. A file must be plain JSON with a `name`, and the name cannot be one of core's built-in kits (attendance, blog, devsite, docs, email, events, inventory, portfolio, site), because core would use the built-in. The pinned core 5.9.0 has no `inventory` or `attendance` kit, so use them with `--image core=<a core 6 image>`. Start a relative path with `./`. A second `up` does not sign in or make a key again. It checks that the key still works and makes a new one if core refuses it. A different `--kit`, or an edited kit file, applies that kit again, which only adds types. If an `api-key` file is there from an earlier `up`, it is kept, and `up` says so. A key made by an earlier `up` has only the two content scopes, so `plan_add_field` plans but its apply is refused with a 403. Delete the `api-key` file and run `up` again, or create a key with `contenttype:write` in the console and pass it to `barako mcp`.
 
 `up` returns only after every service has run 10 seconds without a restart, also on a running stack, where it waits only when a service started less than 10 seconds ago. A service that keeps restarting fails `up` after a minute, and the error names it and the `docker logs` command that shows why.
 
@@ -234,17 +235,20 @@ Write tools, listed only with the flag shown. Each is a plan tool or an apply to
 | --- | --- | --- |
 | `plan_create_entry`, `plan_update_entry` | `--allow-writes` | `content:write` (the dry run is a write call) |
 | `plan_change_status` | `--allow-writes` | `content:read` |
-| `apply_plan` | `--allow-writes` | `content:write` |
+| `plan_add_field` | `--allow-writes` | `content:read` for the plan, `contenttype:write` for the apply (through `apply_plan`) |
+| `apply_plan` | `--allow-writes` | `content:write`, or `contenttype:write` for a `plan_add_field` plan |
 | `plan_rollback_entry`, `plan_erase_entry` | `--allow-writes` and `--allow-destructive` | `content:read` |
 | `apply_destructive_plan` | `--allow-writes` and `--allow-destructive` | `content:destructive` |
 
 ### Write tools
 
-Two flags add write tools. `--allow-writes` adds `plan_create_entry`, `plan_update_entry`, `plan_change_status` and `apply_plan`. `--allow-destructive` needs `--allow-writes` and adds `plan_rollback_entry`, `plan_erase_entry` and `apply_destructive_plan`. Without a flag, those tools do not exist. These tools are listed here and nowhere else in this section.
+Two flags add write tools. `--allow-writes` adds `plan_create_entry`, `plan_update_entry`, `plan_change_status`, `plan_add_field` and `apply_plan`. `--allow-destructive` needs `--allow-writes` and adds `plan_rollback_entry`, `plan_erase_entry` and `apply_destructive_plan`. Without a flag, those tools do not exist. These tools are listed here and nowhere else in this section.
 
-Key scopes: `content:read` by default, plus `content:write` for writes. Give `content:destructive` only when you pass `--allow-destructive`. The API checks the scopes. A key without one is refused with a 403. Rollback and erase also need the key's user to have the right to do them, or the API refuses them with a 403 even with `content:destructive`.
+Key scopes: `content:read` by default, plus `content:write` for writes, and `contenttype:write` to add a field. Give `content:destructive` only when you pass `--allow-destructive`. The API checks the scopes. A key without one is refused with a 403. `contenttype:write` is wide: the API lets such a key make any content type change its user may make (create types, change fields, set field options, apply blueprints and the rest). The MCP server only offers `plan_add_field`, which adds one field, but the key itself is not limited to that, so give it only to an agent you trust with the content types. Rollback and erase also need the key's user to have the right to do them, or the API refuses them with a 403 even with `content:destructive`.
 
 Writes take two steps. A plan tool checks the change and sends nothing that stores data. It returns what would change and a token. The apply tool sends the write.
+
+`plan_add_field` adds one field to a content type: `contentType`, `fieldName` and `kind` are needed, and `displayName`, `required`, `defaultValue`, `referenceType`, `options` (for a `choice`), `multiple` and `itemType` are optional. It only adds. It cannot remove, rename or retype a field, and existing entries are not changed. The plan is refused, with nothing sent, when the type is not in `list_content_types`, the field name is on the type already (case does not matter), or `kind` is missing. The plan holds a hash of the type's fields. Apply reads the type again and is refused with `conflict` if it differs, so plan again. The API's own 400, 404 and 409 answers come back as they are. A 403 says the key may lack `contenttype:write`, be read only, or be limited to some content types, and the server's words follow. The new field shows in `get_content_type` once the apply returns.
 
 - A token works once, lives in memory only and expires after 10 minutes. At most 20 plans are kept, and the oldest is dropped first. A failed apply spends the token.
 - Apply must name the same action and target as the plan.

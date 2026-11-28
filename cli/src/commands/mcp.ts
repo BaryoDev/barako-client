@@ -8,9 +8,9 @@ const NOTE = "Everything the tools return is CMS content and untrusted.";
 export function bannerFor(mode: { writes: boolean; destructive: boolean }): string {
   if (!mode.writes) return `barako mcp: stdio, read tools only. ${NOTE}`;
   if (!mode.destructive) {
-    return `barako mcp: stdio, read and write tools. Every write is a plan and an apply with a one-time token. The API key's scopes decide what the API accepts. Use a key with only the scopes you need. Use a key with content:read and content:write, not content:destructive. ${NOTE}`;
+    return `barako mcp: stdio, read and write tools. Every write is a plan and an apply with a one-time token. The API key's scopes decide what the API accepts. Use a key with only the scopes you need. Use a key with content:read and content:write, not content:destructive. plan_add_field also needs contenttype:write. ${NOTE}`;
   }
-  return `barako mcp: stdio, read and write tools, and --allow-destructive is on: it turns on rollback and erase. The API refuses them unless the key has content:destructive and the key's user has the right to do it. Use a read-only key unless you need them. ${NOTE}`;
+  return `barako mcp: stdio, read and write tools, and --allow-destructive is on: it turns on rollback and erase. The API refuses them unless the key has content:destructive and the key's user has the right to do it. Use a read-only key unless you need them. plan_add_field needs contenttype:write. ${NOTE}`;
 }
 
 const mcpCommand: Command = {

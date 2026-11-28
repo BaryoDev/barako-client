@@ -1,7 +1,7 @@
 import { pathSegment } from "../path";
 import { callOpts, type CallOptions } from "../http";
 import type { Transport } from "../transport";
-import type { ContentTypeDefinition, Paged, ReadableContentType } from "../types";
+import type { AddFieldInput, AddFieldResult, ContentTypeDefinition, Paged, ReadableContentType } from "../types";
 import { allPages } from "./all-pages";
 
 export interface ContentTypesResource {
@@ -13,6 +13,9 @@ export interface ContentTypesResource {
   readable(opts?: CallOptions): Promise<string[]>;
   /** The shape of one readable content type, so you can see its fields before writing. */
   get(name: string, opts?: CallOptions): Promise<ReadableContentType>;
+  /** Add one field to a content type that exists (POST /api/content-types/{name}/fields). Needs the
+   *  `contenttype:write` scope on a key. The server refuses a name the type already has. */
+  addField(name: string, field: AddFieldInput, opts?: CallOptions): Promise<AddFieldResult>;
 }
 
 export function contentTypesResource(transport: Transport): ContentTypesResource {
@@ -43,6 +46,15 @@ export function contentTypesResource(transport: Transport): ContentTypesResource
       transport.request<ReadableContentType>({
         method: "GET",
         path: `/api/contents/types/${pathSegment(name)}`,
+        ...callOpts(opts),
+      }),
+
+    // async, so a bad name rejects as the resource table's calls do
+    addField: async (name, field, opts) =>
+      transport.request<AddFieldResult>({
+        method: "POST",
+        path: `/api/content-types/${pathSegment(name)}/fields`,
+        body: field,
         ...callOpts(opts),
       }),
   };
