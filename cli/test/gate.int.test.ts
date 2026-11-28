@@ -82,19 +82,29 @@ const suffix = () => randomBytes(4).toString("hex");
  * Adds one optional text field to a kit type through plan_add_field and apply_plan, reads the type back
  * with get_content_type, then plans and applies an entry that sets the field and reads it back. A 409
  * from core means a field change is still running on the type, so the add is tried again until the wait
- * ends. A refused add made no change, so trying again cannot add the field twice.
+ * ends. A refused add made no change, so trying again cannot add the field twice. Only that 409 is tried
+ * again: a session that throws (a bad exit, no reply) fails the test, so a clean retry cannot hide it.
  */
 async function addFieldAndUse(contentType: string, entry: () => Record<string, unknown>): Promise<void> {
   const fieldName = `GateNote${suffix()}`;
-  const added = await wait(
+  const attempt = await wait(
     `a field added to ${contentType}`,
-    () =>
-      mcpSession(API, key, ["--allow-writes"], [
-        () => toolCall(1, "plan_add_field", { contentType, fieldName, kind: "string", displayName: "Gate note" }),
-        applyOf("apply_plan", 2, 0),
-      ]),
-    (r) => !(r[1].result.isError && JSON.parse(r[1].result.content[0].text).data?.error?.status === 409),
+    async (): Promise<{ replies: any[] } | { failed: unknown }> => {
+      try {
+        return {
+          replies: await mcpSession(API, key, ["--allow-writes"], [
+            () => toolCall(1, "plan_add_field", { contentType, fieldName, kind: "string", displayName: "Gate note" }),
+            applyOf("apply_plan", 2, 0),
+          ]),
+        };
+      } catch (failed) {
+        return { failed };
+      }
+    },
+    (a) => "failed" in a || !(a.replies[1].result.isError && JSON.parse(a.replies[1].result.content[0].text).data?.error?.status === 409),
   );
+  if ("failed" in attempt) throw attempt.failed;
+  const added = attempt.replies;
   expect(added[0].result.isError, JSON.stringify(added[0]).slice(0, 400)).toBe(false);
   expect(added[1].result.isError, JSON.stringify(added[1]).slice(0, 400)).toBe(false);
   expect(resultData(added[1]).added).toBe(fieldName);

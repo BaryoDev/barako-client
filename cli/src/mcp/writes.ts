@@ -309,7 +309,8 @@ const planAddField: Tool = {
     if (required !== undefined) out.required = required;
     // null is the same as no default: it is not sent, and a required field still gets the note.
     if (a.defaultValue !== undefined && a.defaultValue !== null) {
-      requireFits(a.defaultValue);
+      // An ArgumentError, so the server answers this call with a usage error and not an internal error.
+      if (Buffer.byteLength(JSON.stringify(a.defaultValue), "utf8") > RESULT_CAP_BYTES) throw new ArgumentError('"defaultValue" is over 256 KB.');
       out.defaultValue = a.defaultValue;
     }
     if (lower === "reference" && a.referenceType === undefined) throw new ArgumentError('A "reference" field needs "referenceType".');

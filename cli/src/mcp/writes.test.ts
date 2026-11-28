@@ -927,6 +927,15 @@ describe("mcp plan_add_field", () => {
     expect(s.replies.every((r) => r.result.isError)).toBe(true);
   });
 
+  it("a default over 256 KB is a usage error on that call, and nothing is sent", async () => {
+    const { client, contentTypes } = typer();
+    const s = await converse([() => call(1, "plan_add_field", { ...ADD, defaultValue: "x".repeat(300 * 1024) })], { client });
+    expect(s.replies[0]!.id).toBe(1);
+    expect(errorOf(s.replies[0]!)).toMatchObject({ code: "usage" });
+    expect(errorOf(s.replies[0]!).message).toContain('"defaultValue" is over 256 KB');
+    expect(contentTypes.addField).not.toHaveBeenCalled();
+  });
+
   it("a kind the CLI does not know is planned with a note, a required field with no default too", async () => {
     const { client } = typer();
     const s = await converse(
