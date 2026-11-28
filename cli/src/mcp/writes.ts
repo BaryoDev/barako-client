@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { ContentStatus, type AddFieldInput, type BarakoClient, type ReadableContentType } from "@baryodev/barako-client";
+import { addFieldCall } from "../client-api";
 import { KNOWN_FIELD_TYPES } from "../data-schema";
 import {
   addField,
@@ -306,7 +307,8 @@ const planAddField: Tool = {
     if (a.displayName !== undefined) out.displayName = checkText(a.displayName, "displayName");
     const required = checkBool(a.required, "required");
     if (required !== undefined) out.required = required;
-    if (a.defaultValue !== undefined) {
+    // null is the same as no default: it is not sent, and a required field still gets the note.
+    if (a.defaultValue !== undefined && a.defaultValue !== null) {
       requireFits(a.defaultValue);
       out.defaultValue = a.defaultValue;
     }
@@ -323,6 +325,8 @@ const planAddField: Tool = {
     return out;
   },
   async run(client, a, ctx) {
+    // Before the token is made, so a client that cannot add a field never hands one out.
+    addFieldCall(client);
     const asked = a.contentType as string;
     const names = await listContentTypes(client);
     const listed = names.find((n) => n.toLowerCase() === asked.toLowerCase());

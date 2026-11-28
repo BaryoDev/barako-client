@@ -120,6 +120,30 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # The CLI keeps the client external, and npm ci installs the published one from the lockfile, which
+      # may not have a call the CLI uses yet (addField came in 0.7.0). The gate drives the built CLI, so
+      # the client built from this commit is packed and unpacked over the installed copy. A real copy, not
+      # a link. Only this runner's node_modules changes: the lockfile, the package files and what
+      # npm pack -w cli publishes stay as they are.
+      - name: Use the client built from this commit
+        run: |
+          set -euo pipefail
+          tarball=$(npm pack --silent --pack-destination "$RUNNER_TEMP")
+          dest=node_modules/@baryodev/barako-client
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          tar -xzf "$RUNNER_TEMP/$tarball" --strip-components=1 -C "$dest"
+          want=$(node -p "require('./package.json').version")
+          got=$(node -p "require('./$dest/package.json').version")
+          if [ "$got" != "$want" ]; then
+            echo "::error::The installed client is $got, not $want."
+            exit 1
+          fi
+          if ! grep -q addField "$dest/dist/index.js"; then
+            echo "::error::The client built from this commit has no addField."
+            exit 1
+          fi
+          echo "The CLI runs the client $got built from this commit."
       # The stack folder is under a temporary HOME, so the runner's own home is never touched. Docker
       # keeps looking for its plugins in the real one.
       - name: Keep the Docker config

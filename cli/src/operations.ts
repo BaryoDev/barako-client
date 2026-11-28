@@ -191,8 +191,8 @@ export async function eraseEntry(client: BarakoClient, id: string): Promise<{ er
 }
 
 const FORBIDDEN_FIELD =
-  "The API refused this. The key needs the contenttype:write scope, and its user needs the right to change content types. " +
-  "If the key has no contenttype:write, create a key with contenttype:read and contenttype:write and use that one. " +
+  "The API refused this. The key may lack the contenttype:write scope, be read only, or be limited to some content types, or its user may lack the right to change content types. " +
+  "If the key has no contenttype:write, create a key with contenttype:write and use that one. " +
   "A key made by an earlier barako up has only the content scopes, and barako up keeps it.";
 
 /** The words the server gave for a refusal: its message, then the text of each entry in `errors`. */

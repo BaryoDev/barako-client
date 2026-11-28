@@ -49,7 +49,8 @@ export function contentTypesResource(transport: Transport): ContentTypesResource
         ...callOpts(opts),
       }),
 
-    addField: (name, field, opts) =>
+    // async, so a bad name rejects as the resource table's calls do
+    addField: async (name, field, opts) =>
       transport.request<AddFieldResult>({
         method: "POST",
         path: `/api/content-types/${pathSegment(name)}/fields`,

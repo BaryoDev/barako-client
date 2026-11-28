@@ -2,10 +2,14 @@
 
 ## Unreleased
 
-- New MCP tool `plan_add_field` (with `--allow-writes`): plan and apply, through `apply_plan`, one new field on a content type. It only adds. The plan is refused before any call when the type is not listed, the field name is already on the type (any case) or an input is missing, and apply is refused when the type changed since the plan (a hash of its fields is compared). The client gains `contentTypes.addField(name, field)`, which calls `POST /api/content-types/{name}/fields`. `barako up` now makes its key with `contenttype:read` and `contenttype:write` as well. `up` keeps a key from an earlier run, so that key cannot add a field: its apply gets a 403 and the message says to create a key with those scopes. The nightly gate adds a field to a type of each kit and sets it on a new entry.
+- New MCP tool `plan_add_field` (with `--allow-writes`): plan and apply, through `apply_plan`, one new field on a content type. It only adds. The plan is refused before any call when the type is not listed, the field name is already on the type (any case) or an input is missing, and apply is refused when the type changed since the plan (a hash of its fields is compared). It needs client 0.7.0, and the plan is refused when the installed client is older. `barako up` now makes its key with `contenttype:write` as well. `up` keeps a key from an earlier run, so that key cannot add a field: its apply gets a 403 and the message says to create a key with that scope. The nightly gate adds a field to a type of each kit and sets it on a new entry.
 - New `barako up --image <service>=<image>:<tag>`, repeatable, once per service (`core`, `press` or `brew`). It runs that service from another image, for example `core=ghcr.io/baryodev/barako-cms:master`. The value is checked before anything starts (at most 255 characters, a lower-case repository path, a tag that is required) and a refused value is not echoed. Digests and registries with a port are refused. The pin is stored without a digest, the image is pulled again every time `up` starts the stack, and it wins over `--latest` for its service. A changed `--image` on a running or partly up stack is refused like a changed `--latest`, and `barako status` lists overridden services under `overridden`.
 - `--kit` no longer accepts a file named `inventory` or `attendance`, which are built-in kits in core 6.
 - A nightly `gate` job in CI starts the inventory, blog and attendance kits on core's master image, one runner each, and drives them through `barako mcp`. The workflow can also be started by hand.
+
+## 0.7.0
+
+- New `contentTypes.addField(name, field)`: adds one field to a content type with `POST /api/content-types/{name}/fields`. The key needs the `contenttype:write` scope. A name of `..` or an empty name rejects before any request. New exports: the types `AddFieldInput` and `AddFieldResult`. The CLI accepts client 0.5.0 up to 0.7.x.
 
 ## 0.6.0
 

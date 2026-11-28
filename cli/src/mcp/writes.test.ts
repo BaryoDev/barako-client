@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BarakoError, type BarakoClient } from "@baryodev/barako-client";
+import { bannerFor } from "../commands/mcp";
 import { run } from "../main";
 import { RESULT_CAP_BYTES, serve } from "./server";
 import { MAX_PLANS, PLAN_TTL_MS, PlanStore, type Plan } from "./plans";
@@ -978,7 +979,8 @@ describe("mcp plan_add_field", () => {
     expect(e.code).toBe("forbidden");
     expect(e.status).toBe(403);
     expect(e.message).toContain("contenttype:write");
-    expect(e.message).toContain("create a key with contenttype:read and contenttype:write");
+    expect(e.message).toContain("create a key with contenttype:write");
+    expect(e.message).toContain("be read only, or be limited to some content types");
     expect(e.message).toContain("barako up keeps it");
     expect(e.message).toContain("This API key is missing the 'contenttype:write' scope.");
   });
@@ -1008,12 +1010,85 @@ describe("mcp plan_add_field", () => {
     expect(dataOf(s.replies[1]!)).toEqual({ contentType: "post", added: "Note", fields: [] });
   });
 
-  it("a client without addField says to update it, and nothing is written", async () => {
+  it("a client without addField is refused at plan time, before a token exists or a call is made", async () => {
     const { client, contentTypes } = typer();
     delete contentTypes.addField;
-    const s = await converse([() => call(1, "plan_add_field", ADD), apply(2, 0)], { client });
-    expect(errorOf(s.replies[1]!).code).toBe("usage");
-    expect(errorOf(s.replies[1]!).message).toContain("0.7.0");
+    const s = await converse([() => call(1, "plan_add_field", ADD)], { client });
+    expect(s.replies[0]!.result.isError).toBe(true);
+    expect(errorOf(s.replies[0]!).code).toBe("usage");
+    expect(errorOf(s.replies[0]!).message).toContain("0.7.0");
+    expect(dataOf(s.replies[0]!).token).toBeUndefined();
+    expect(contentTypes.readable).not.toHaveBeenCalled();
+    expect(contentTypes.get).not.toHaveBeenCalled();
+  });
+
+  it("a null defaultValue is the same as none: it is not sent and a required field gets the note", async () => {
+    const { client, contentTypes } = typer();
+    const s = await converse(
+      [() => call(1, "plan_add_field", { ...ADD, required: true, defaultValue: null }), apply(2, 0), () => call(3, "plan_add_field", { ...ADD, defaultValue: null }), apply(4, 2)],
+      { client },
+    );
+    const d = dataOf(s.replies[0]!);
+    expect(d.changes.notes[0]).toContain("defaultValue");
+    expect("defaultValue" in d.changes.request).toBe(false);
+    expect(contentTypes.addField.mock.calls[0]![1]).toEqual({ fieldName: "Note", type: "text", displayName: "Note", isRequired: true });
+    expect("defaultValue" in contentTypes.addField.mock.calls[1]![1]).toBe(false);
+  });
+
+  it("referenceType, multiple and itemType reach the request body of the plan and the apply", async () => {
+    const { client, contentTypes } = typer();
+    const s = await converse(
+      [
+        () => call(1, "plan_add_field", { contentType: "post", fieldName: "Cat", kind: "reference", referenceType: "category", multiple: true }),
+        apply(2, 0),
+        () => call(3, "plan_add_field", { contentType: "post", fieldName: "Tags", kind: "array", itemType: "string" }),
+        apply(4, 2),
+        () => call(5, "plan_add_field", { contentType: "post", fieldName: "Picks", kind: "choice", options: ["a"], multiple: true }),
+        apply(6, 4),
+      ],
+      { client },
+    );
+    expect(dataOf(s.replies[0]!).changes.request).toEqual({ fieldName: "Cat", type: "reference", displayName: "Cat", isRequired: false, referenceType: "category", multiple: true });
+    expect(dataOf(s.replies[2]!).changes.request).toMatchObject({ itemType: "string" });
+    const sent = contentTypes.addField.mock.calls.map((c: unknown[]) => c[1]);
+    expect(sent[0]).toMatchObject({ type: "reference", referenceType: "category", multiple: true });
+    expect(sent[1]).toMatchObject({ type: "array", itemType: "string" });
+    expect(sent[2]).toMatchObject({ type: "choice", multiple: true, options: [{ value: "a", label: "a" }] });
+  });
+
+  it("a change to referenceType, multiple or itemType between plan and apply refuses the apply", async () => {
+    const drift: Json[] = [
+      { ...POST_TYPE, fields: [field("Title", "reference", { referenceType: "category" }), POST_TYPE.fields[1]] },
+      { ...POST_TYPE, fields: [field("Title", "string", { multiple: true }), POST_TYPE.fields[1]] },
+      { ...POST_TYPE, fields: [field("Title", "array", { itemType: "string" }), POST_TYPE.fields[1]] },
+    ];
+    const first: Json[] = [
+      { ...POST_TYPE, fields: [field("Title", "reference", { referenceType: "page" }), POST_TYPE.fields[1]] },
+      POST_TYPE,
+      { ...POST_TYPE, fields: [field("Title", "array", { itemType: "text" }), POST_TYPE.fields[1]] },
+    ];
+    for (const [i, next] of drift.entries()) {
+      const { client, contentTypes } = typer({ type: first[i] });
+      const s = await converse(
+        [
+          () => call(1, "plan_add_field", ADD),
+          () => {
+            contentTypes.get.mockResolvedValue(next);
+            return call(2, "noop");
+          },
+          apply(3, 0),
+        ],
+        { client },
+      );
+      expect(errorOf(s.replies[2]!), `case ${i}`).toMatchObject({ code: "conflict", message: "The content type changed since the plan, plan again." });
+      expect(contentTypes.addField).not.toHaveBeenCalled();
+    }
+  });
+
+  it("the help text says plan_add_field needs contenttype:write", () => {
+    expect(bannerFor({ writes: true, destructive: false })).toContain("plan_add_field also needs contenttype:write");
+    expect(bannerFor({ writes: true, destructive: true })).toContain("plan_add_field needs contenttype:write");
+    expect(bannerFor({ writes: false, destructive: false })).not.toContain("plan_add_field");
   });
 
   it("apply_destructive_plan does not apply an add_field plan", async () => {
